@@ -289,6 +289,13 @@ xkeen_apply_udp_route() {
   xkeen_ensure_tproxy_module || return 1
   iptables -t mangle -N xkeen_udp_route 2>/dev/null || true
   iptables -t mangle -F xkeen_udp_route 2>/dev/null || true
+  # Bypass UDP for hosts in the bypass ipset before TPROXY. Mirrors the TCP
+  # bypass-RETURN that lives in the nat `xkeen` chain. Without this, a host
+  # added to bypass via UI only escapes REDIRECT (TCP); its UDP still goes
+  # to sing-box -> xray -> VPN, which adds full VPN RTT to realtime traffic
+  # (e.g. game servers, voice). Same set is used so UI bypass groups cover
+  # both protocols with one toggle, matching the project's intent.
+  iptables -t mangle -A xkeen_udp_route -m set --match-set "$XKEEN_BYPASS_SET" dst -j RETURN 2>/dev/null || true
   iptables -t mangle -A xkeen_udp_route -p udp -j TPROXY --on-port "$XKEEN_TPROXY_PORT" --tproxy-mark "$XKEEN_UDP_MARK/$XKEEN_UDP_MARK" 2>/dev/null || return 1
 
   while ip rule show | grep -qE "fwmark $XKEEN_UDP_MARK(/$XKEEN_UDP_MARK)? (lookup|table) $XKEEN_UDP_TABLE"; do
