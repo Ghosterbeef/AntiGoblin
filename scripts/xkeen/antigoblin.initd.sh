@@ -24,7 +24,10 @@ start_ui() {
   : > "$LOG_FILE"
 
   cd "$ROOT_DIR" || return 1
-  /opt/sbin/uhttpd -f -p 0.0.0.0:$PORT -h "$ROOT_DIR" -I index.html -x /api -i .cgi=/bin/sh -r 'AntiGoblin' >>"$LOG_FILE" 2>&1 &
+  # -t 120 (CGI), -T 120 (network): default 60/30 was too short for full
+  # Save+Apply (rebuilds ~700 ipset CIDRs + xray reload), users hit Bad
+  # Gateway mid-save when crossing the 60s CGI window.
+  /opt/sbin/uhttpd -f -p 0.0.0.0:$PORT -h "$ROOT_DIR" -I index.html -x /api -i .cgi=/bin/sh -r 'AntiGoblin' -t 120 -T 120 >>"$LOG_FILE" 2>&1 &
   sleep 2
 
   if is_running; then
