@@ -1897,38 +1897,29 @@ function setProbeStatus(kind, message) {
 function buildOutboundsDocument(profile) {
   const config = normalizeProxyConfig(profile.proxyConfig);
   const mux = buildMuxObject(profile.muxConfig);
+  const protocol = (config.protocol || "vless").toLowerCase();
+
+  // user block differs by protocol; xray keeps the outbound tag "vless-reality"
+  // for compatibility with existing routing.json rules even when we ship vmess.
+  const userBlock = protocol === "vmess"
+    ? { id: config.uuid, alterId: Number(config.alterId) || 0, security: "auto", level: 0 }
+    : { id: config.uuid, encryption: "none", flow: config.flow || "", level: 0 };
+
   return {
     outbounds: [
       {
         tag: "vless-reality",
-        protocol: "vless",
+        protocol,
         settings: {
           vnext: [
             {
               address: config.address,
               port: Number(config.port),
-              users: [
-                {
-                  id: config.uuid,
-                  encryption: "none",
-                  flow: config.flow || "xtls-rprx-vision",
-                  level: 0
-                }
-              ]
+              users: [userBlock]
             }
           ]
         },
-        streamSettings: {
-          network: "tcp",
-          security: "reality",
-          realitySettings: {
-            publicKey: config.publicKey,
-            fingerprint: config.fingerprint || "random",
-            serverName: config.serverName,
-            shortId: config.shortId,
-            spiderX: "/"
-          }
-        },
+        streamSettings: buildStreamSettings(config),
         mux
       },
       {
@@ -1965,14 +1956,22 @@ function extractMuxConfig(doc) {
 
 function createDefaultProxyConfig() {
   return {
+    protocol: "vless",
     address: "",
     port: "",
     uuid: "",
     flow: "xtls-rprx-vision",
-    publicKey: "",
+    network: "tcp",
+    security: "reality",
     serverName: "",
+    fingerprint: "random",
+    publicKey: "",
     shortId: "",
-    fingerprint: "random"
+    spiderX: "/",
+    alpn: [],
+    path: "",
+    host: "",
+    alterId: 0
   };
 }
 
@@ -1990,6 +1989,203 @@ function normalizeProxyConfig(config) {
     ...createDefaultProxyConfig(),
     ...(config || {})
   };
+}
+
+// Parse a single vless:// URI per the standard URL shape
+// vless://UUID@HOST:PORT?param=value&...#friendly-name
+// Returns { ok: true, config } or { ok: false, error }
+function parseVlessUri(uri) {
+  if (typeof uri !== "string") return { ok: false, error: "not a string" };
+  const trimmed = uri.trim();
+  if (!/^vless:\/\//i.test(trimmed)) return { ok: false, error: "not vless://" };
+
+  let body = trimmed.slice("vless://".length);
+  let name = "";
+  const hashIdx = body.indexOf("#");
+  if (hashIdx >= 0) {
+    try { name = decodeURIComponent(body.slice(hashIdx + 1)); }
+    catch { name = body.slice(hashIdx + 1); }
+    body = body.slice(0, hashIdx);
+  }
+
+  let queryStr = "";
+  const queryIdx = body.indexOf("?");
+  if (queryIdx >= 0) {
+    queryStr = body.slice(queryIdx + 1);
+    body = body.slice(0, queryIdx);
+  }
+
+  const atIdx = body.indexOf("@");
+  if (atIdx < 0) return { ok: false, error: "missing @ in vless URI" };
+  const uuid = body.slice(0, atIdx);
+  const hostPort = body.slice(atIdx + 1);
+  if (!uuid || !hostPort) return { ok: false, error: "empty uuid or host" };
+
+  // rightmost colon — handles IPv6 in brackets
+  const colonIdx = hostPort.lastIndexOf(":");
+  if (colonIdx < 0) return { ok: false, error: "missing port" };
+  const host = hostPort.slice(0, colonIdx).replace(/^\[|\]$/g, "");
+  const port = parseInt(hostPort.slice(colonIdx + 1), 10);
+  if (!host || !Number.isFinite(port) || port < 1 || port > 65535) {
+    return { ok: false, error: "invalid host or port" };
+  }
+
+  const params = {};
+  for (const pair of queryStr.split("&")) {
+    if (!pair) continue;
+    const eqIdx = pair.indexOf("=");
+    const key = eqIdx < 0 ? pair : pair.slice(0, eqIdx);
+    const val = eqIdx < 0 ? "" : pair.slice(eqIdx + 1);
+    try { params[key] = decodeURIComponent(val); }
+    catch { params[key] = val; }
+  }
+
+  const security = (params.security || "").toLowerCase() || "none";
+  const network = (params.type || "tcp").toLowerCase();
+  const alpn = params.alpn
+    ? params.alpn.split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+
+  return {
+    ok: true,
+    config: {
+      protocol: "vless",
+      name: name || `${host}:${port}`,
+      address: host,
+      port,
+      uuid,
+      flow: params.flow || "",
+      network,
+      security,
+      serverName: params.sni || params.serverName || "",
+      fingerprint: params.fp || "",
+      publicKey: params.pbk || "",
+      shortId: params.sid || "",
+      spiderX: params.spx || "/",
+      alpn,
+      path: params.path || "",
+      host: params.host || "",
+      alterId: 0
+    }
+  };
+}
+
+// Parse vmess:// — payload is base64-encoded JSON
+function parseVmessUri(uri) {
+  if (typeof uri !== "string") return { ok: false, error: "not a string" };
+  const trimmed = uri.trim();
+  if (!/^vmess:\/\//i.test(trimmed)) return { ok: false, error: "not vmess://" };
+
+  const payload = trimmed.slice("vmess://".length);
+  let json;
+  try {
+    let b64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const decoded = atob(b64);
+    json = JSON.parse(decoded);
+  } catch (err) {
+    return { ok: false, error: `vmess decode failed: ${err.message}` };
+  }
+
+  const port = parseInt(json.port, 10);
+  if (!json.add || !Number.isFinite(port)) {
+    return { ok: false, error: "vmess missing add or port" };
+  }
+
+  // vmess "tls" field: "tls" | "reality" | "" | "none"
+  const tlsRaw = String(json.tls || "").toLowerCase();
+  const security = tlsRaw === "tls" ? "tls" : tlsRaw === "reality" ? "reality" : "none";
+  const network = String(json.net || "tcp").toLowerCase();
+  const alpn = json.alpn
+    ? String(json.alpn).split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+
+  return {
+    ok: true,
+    config: {
+      protocol: "vmess",
+      name: json.ps || `${json.add}:${port}`,
+      address: json.add,
+      port,
+      uuid: json.id || "",
+      flow: "",
+      network,
+      security,
+      serverName: json.sni || "",
+      fingerprint: json.fp || "",
+      publicKey: "",
+      shortId: "",
+      spiderX: "/",
+      alpn,
+      path: json.path || "",
+      host: json.host || "",
+      alterId: parseInt(json.aid, 10) || 0
+    }
+  };
+}
+
+// Parse a subscription body (already base64-decoded by caller).
+// Each non-empty line is a URI; unknown schemes are skipped silently.
+function parseSubscriptionText(rawText) {
+  const lines = String(rawText || "").split(/\r?\n/);
+  const configs = [];
+  const errors = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("#")) continue;
+    let result = null;
+    if (/^vless:\/\//i.test(trimmed)) result = parseVlessUri(trimmed);
+    else if (/^vmess:\/\//i.test(trimmed)) result = parseVmessUri(trimmed);
+    else continue;
+    if (result.ok) configs.push(result.config);
+    else errors.push({ line: trimmed.slice(0, 80), error: result.error });
+  }
+  return { configs, errors };
+}
+
+// Build xray outbound `streamSettings` from a normalized proxy config.
+// Branches on `security` (reality | tls | none) and `network` (tcp | ws).
+// Returns the streamSettings object for the outbound.
+function buildStreamSettings(cfg) {
+  const network = (cfg.network || "tcp").toLowerCase();
+  const security = (cfg.security || "none").toLowerCase();
+
+  const ss = {
+    network,
+    security: security === "none" ? "none" : security
+  };
+
+  if (security === "reality") {
+    ss.realitySettings = {
+      publicKey: cfg.publicKey || "",
+      fingerprint: cfg.fingerprint || "random",
+      serverName: cfg.serverName || "",
+      shortId: cfg.shortId || "",
+      spiderX: cfg.spiderX || "/"
+    };
+  } else if (security === "tls") {
+    ss.tlsSettings = {
+      serverName: cfg.serverName || cfg.address || "",
+      fingerprint: cfg.fingerprint || "chrome",
+      allowInsecure: false
+    };
+    if (Array.isArray(cfg.alpn) && cfg.alpn.length) {
+      ss.tlsSettings.alpn = cfg.alpn.slice();
+    }
+  }
+
+  if (network === "ws") {
+    ss.wsSettings = {
+      path: cfg.path || "/",
+      headers: cfg.host ? { Host: cfg.host } : {}
+    };
+  } else if (network === "grpc") {
+    ss.grpcSettings = {
+      serviceName: cfg.path || ""
+    };
+  }
+
+  return ss;
 }
 
 function normalizeMuxConfig(config) {
