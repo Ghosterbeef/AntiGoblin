@@ -1895,7 +1895,7 @@ function setProbeStatus(kind, message) {
 }
 
 function buildOutboundsDocument(profile) {
-  const config = normalizeProxyConfig(profile.proxyConfig);
+  const config = getActiveProxyConfig(profile);
   const mux = buildMuxObject(profile.muxConfig);
   const protocol = (config.protocol || "vless").toLowerCase();
 
@@ -2296,12 +2296,42 @@ function createEmptyProfile(name = T.defaultProfileName) {
     fallbackOutbound: "direct",
     proxyConfig: createDefaultProxyConfig(),
     muxConfig: createDefaultMuxConfig(),
+    proxies: [],
+    subscriptions: [],
+    activeProxyId: null,
     groups: [createEmptyGroup()]
   };
 }
 
 function cloneProfile(profile) {
   return JSON.parse(JSON.stringify(profile));
+}
+
+function normalizeProxyEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const config = normalizeProxyConfig(entry.config);
+  if (!config.address || !config.uuid) return null;
+  return {
+    id: entry.id || `proxy-${newId()}`,
+    // Prefer the user-supplied name; fall back to the real address, NOT the
+    // SNI (Reality serverName is camouflage and confuses users).
+    name: String(entry.name || config.address || "Unnamed"),
+    source: entry.source || "manual",
+    config
+  };
+}
+
+function normalizeSubscriptionEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const url = String(entry.url || "").trim();
+  if (!url) return null;
+  return {
+    id: entry.id || `sub-${newId()}`,
+    name: String(entry.name || url.replace(/^https?:\/\//, "").slice(0, 32)),
+    url,
+    lastFetched: Number.isFinite(entry.lastFetched) ? entry.lastFetched : null,
+    lastError: entry.lastError ? String(entry.lastError).slice(0, 200) : null
+  };
 }
 
 function normalizeProfile(profile) {
@@ -2315,15 +2345,63 @@ function normalizeProfile(profile) {
     cidrs: uniq(Array.isArray(group.cidrs) ? group.cidrs : [])
   }));
 
+  // New multi-key fields with shape normalization
+  const proxies = (Array.isArray(profile.proxies) ? profile.proxies : [])
+    .map(normalizeProxyEntry)
+    .filter(Boolean);
+  const subscriptions = (Array.isArray(profile.subscriptions) ? profile.subscriptions : [])
+    .map(normalizeSubscriptionEntry)
+    .filter(Boolean);
+
+  const legacy = normalizeProxyConfig(profile.proxyConfig);
+
+  // Migration: if proxies[] is empty but legacy proxyConfig has real fields,
+  // create proxies[0] from legacy. Idempotent — running again no-ops since
+  // the migrated proxy is already present.
+  if (proxies.length === 0 && legacy.address && legacy.uuid) {
+    proxies.push({
+      id: `proxy-${newId()}`,
+      name: legacy.address || "Legacy",
+      source: "manual",
+      config: legacy
+    });
+  }
+
+  // Validate activeProxyId: must reference an existing proxy.
+  let activeProxyId = profile.activeProxyId || null;
+  if (activeProxyId && !proxies.some((p) => p.id === activeProxyId)) {
+    activeProxyId = null;
+  }
+  if (!activeProxyId && proxies.length) {
+    activeProxyId = proxies[0].id;
+  }
+
   return {
     id: profile.id || newId(),
     name: profile.name || T.defaultProfileName,
     domainStrategy: profile.domainStrategy || "IPIfNonMatch",
     fallbackOutbound: profile.fallbackOutbound || "direct",
-    proxyConfig: normalizeProxyConfig(profile.proxyConfig),
+    proxyConfig: legacy,
     muxConfig: normalizeMuxConfig(profile.muxConfig),
+    proxies,
+    subscriptions,
+    activeProxyId,
     groups: groups.length ? groups : [createEmptyGroup()]
   };
+}
+
+// Return the proxy config that should drive the xray outbound. Prefers the
+// active entry in profile.proxies[]; falls back to legacy profile.proxyConfig
+// when nothing is selected (e.g. fresh install before user picks a key).
+function getActiveProxyConfig(profile) {
+  if (!profile) return createDefaultProxyConfig();
+  const proxies = Array.isArray(profile.proxies) ? profile.proxies : [];
+  if (proxies.length && profile.activeProxyId) {
+    const active = proxies.find((p) => p.id === profile.activeProxyId);
+    if (active && active.config) return normalizeProxyConfig(active.config);
+  }
+  if (proxies.length && proxies[0].config) return normalizeProxyConfig(proxies[0].config);
+  return normalizeProxyConfig(profile.proxyConfig);
 }
 
 function getActiveProfile() {
