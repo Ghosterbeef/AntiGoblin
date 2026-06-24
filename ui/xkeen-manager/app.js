@@ -728,10 +728,11 @@ function bindTopLevel() {
   }
 
   if (els.activeProxyList) {
-    els.activeProxyList.addEventListener("change", (event) => {
-      const radio = event.target.closest('input[type="radio"][name="activeProxy"]');
-      if (!radio) return;
-      setActiveProxy(radio.value);
+    els.activeProxyList.addEventListener("click", (event) => {
+      const row = event.target.closest(".active-row");
+      if (!row) return;
+      const proxyId = row.dataset.proxyId;
+      if (proxyId) setActiveProxy(proxyId);
     });
   }
 
@@ -2012,6 +2013,10 @@ function renderSubscriptionsList(profile) {
   els.subscriptionsList.innerHTML = "";
   const subs = profile.subscriptions || [];
   if (subs.length === 0) {
+    // Hide the empty hint entirely if user already has any keys in the
+    // other section — keeps the UI quiet once setup is done.
+    const hasAnyProxies = (profile.proxies || []).length > 0;
+    if (hasAnyProxies) return;
     const li = document.createElement("li");
     li.className = "card-empty";
     li.textContent = "Нет подписок. Жми «+ Подписка» чтобы добавить.";
@@ -2051,6 +2056,10 @@ function renderManualKeysList(profile) {
   els.manualKeysList.innerHTML = "";
   const proxies = (profile.proxies || []).filter((p) => p.source === "manual");
   if (proxies.length === 0) {
+    // Skip the empty hint if user already has a subscription with proxies.
+    const hasSubProxies = (profile.proxies || []).some((p) => p.source !== "manual");
+    const hasSubs = (profile.subscriptions || []).length > 0;
+    if (hasSubProxies || hasSubs) return;
     const li = document.createElement("li");
     li.className = "card-empty";
     li.textContent = "Нет ручных ключей. Жми «+ Ручной ключ» чтобы добавить.";
@@ -2095,20 +2104,18 @@ function renderActiveProxyList(profile) {
     const srcLabel = sub ? sub.name : "ручной";
     const li = document.createElement("li");
     li.className = "active-row" + (p.id === activeId ? " selected" : "");
+    li.dataset.proxyId = p.id;
     li.innerHTML = `
-      <label class="active-radio">
-        <input type="radio" name="activeProxy" value="${p.id}" ${p.id === activeId ? "checked" : ""}>
-        <div class="active-info">
-          <div class="active-name">${escapeHtml(p.name)}</div>
-          <div class="active-meta">
-            <span>${escapeHtml(srcLabel)}</span>
-            <span>·</span>
-            <span>${escapeHtml(securityBadge(p.config))}</span>
-            <span>·</span>
-            <span>${escapeHtml(p.config.address)}:${p.config.port}</span>
-          </div>
+      <input type="radio" name="activeProxy" value="${p.id}" ${p.id === activeId ? "checked" : ""} class="active-radio-input">
+      <div class="active-info">
+        <div class="active-name">${escapeHtml(p.name)}</div>
+        <div class="active-meta">
+          <span>${escapeHtml(srcLabel)}</span>
+          <span>·</span>
+          <span class="card-badge">${escapeHtml(securityBadge(p.config))}</span>
+          <span>${escapeHtml(p.config.address)}:${p.config.port}</span>
         </div>
-      </label>
+      </div>
     `;
     els.activeProxyList.appendChild(li);
   }
