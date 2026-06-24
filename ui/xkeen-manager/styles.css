@@ -976,3 +976,209 @@ code { color: var(--accent-2); }
     justify-content: flex-start;
   }
 }
+
+/* === Multi-key UI: subscriptions, manual keys, active selector === */
+
+.key-block {
+  margin-top: 18px;
+}
+
+.key-block-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted, #8aa);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cards-list,
+.active-proxy-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card-empty {
+  padding: 14px 16px;
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  color: var(--muted, #8aa);
+  font-size: 13px;
+  text-align: center;
+}
+
+.key-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+}
+
+.card-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.card-title {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-meta {
+  margin-top: 4px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted, #8aa);
+}
+
+.card-badge {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 6px;
+  background: rgba(100, 200, 255, 0.12);
+  color: #88c8ff;
+  border-radius: 4px;
+}
+
+.card-url {
+  margin-top: 4px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted, #8aa);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #ff9080;
+}
+
+.card-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.card-actions button {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.card-actions button.danger {
+  color: #ff8080;
+}
+
+.active-row {
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.active-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.active-row.selected {
+  background: rgba(100, 200, 100, 0.08);
+  border-color: rgba(100, 200, 100, 0.3);
+}
+
+.active-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  margin: 0;
+}
+
+.active-radio input[type="radio"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.active-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.active-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.active-meta {
+  margin-top: 3px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted, #8aa);
+}
+
+.inline-form {
+  margin-top: 16px;
+  padding: 16px;
+  background: rgba(100, 200, 255, 0.04);
+  border: 1px solid rgba(100, 200, 255, 0.15);
+  border-radius: 12px;
+}
+
+.inline-form > label {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.form-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.form-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+  margin-bottom: 0;
+}
+
+.form-actions button.primary {
+  background: #4a90ff;
+  color: #fff;
+}
+
+.form-actions button.primary:hover {
+  background: #5aa0ff;
+}
+
+.advanced-fields {
+  margin-bottom: 12px;
+}
+
+.advanced-fields > summary {
+  cursor: pointer;
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--muted, #8aa);
+  user-select: none;
+}
+
+.advanced-fields[open] > summary {
+  margin-bottom: 12px;
+}

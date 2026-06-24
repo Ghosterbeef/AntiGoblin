@@ -412,6 +412,22 @@ const els = {
   importProxyBtn: document.getElementById("importProxyBtn"),
   probeProxyBtn: document.getElementById("probeProxyBtn"),
   proxyProbeStatus: document.getElementById("proxyProbeStatus"),
+  addManualKeyBtn: document.getElementById("addManualKeyBtn"),
+  addSubscriptionBtn: document.getElementById("addSubscriptionBtn"),
+  subscriptionsList: document.getElementById("subscriptionsList"),
+  manualKeysList: document.getElementById("manualKeysList"),
+  activeProxyList: document.getElementById("activeProxyList"),
+  manualKeyForm: document.getElementById("manualKeyForm"),
+  manualKeyFormTitle: document.getElementById("manualKeyFormTitle"),
+  manualKeyName: document.getElementById("manualKeyName"),
+  saveManualKeyBtn: document.getElementById("saveManualKeyBtn"),
+  cancelManualKeyBtn: document.getElementById("cancelManualKeyBtn"),
+  subscriptionForm: document.getElementById("subscriptionForm"),
+  newSubscriptionName: document.getElementById("newSubscriptionName"),
+  newSubscriptionUrl: document.getElementById("newSubscriptionUrl"),
+  subscriptionFormStatus: document.getElementById("subscriptionFormStatus"),
+  saveSubscriptionBtn: document.getElementById("saveSubscriptionBtn"),
+  cancelSubscriptionBtn: document.getElementById("cancelSubscriptionBtn"),
   previewKicker: document.getElementById("previewKicker"),
   previewTitle: document.getElementById("previewTitle"),
   groups: document.getElementById("groups"),
@@ -655,7 +671,7 @@ function bindTopLevel() {
   els.probeProxyBtn.addEventListener("click", async () => {
     const profile = getActiveProfile();
     if (!profile) return;
-    const config = normalizeProxyConfig(profile.proxyConfig);
+    const config = getActiveProxyConfig(profile);
     const toast = showToast(formatMessage(T.toastProbing || "Проверка {addr}:{port}...", { addr: config.address, port: config.port }), { kind: "progress" });
     try {
       const probe = await probeProxy(config);
@@ -669,6 +685,55 @@ function bindTopLevel() {
       toast.update(`${T.probeError}: ${error.message}`, "error");
     }
   });
+
+  // --- Multi-key UI wiring ---
+
+  if (els.addManualKeyBtn) {
+    els.addManualKeyBtn.addEventListener("click", () => openManualKeyForm(null));
+  }
+  if (els.addSubscriptionBtn) {
+    els.addSubscriptionBtn.addEventListener("click", () => openSubscriptionForm());
+  }
+  if (els.cancelManualKeyBtn) {
+    els.cancelManualKeyBtn.addEventListener("click", () => closeManualKeyForm());
+  }
+  if (els.saveManualKeyBtn) {
+    els.saveManualKeyBtn.addEventListener("click", () => saveManualKey());
+  }
+  if (els.cancelSubscriptionBtn) {
+    els.cancelSubscriptionBtn.addEventListener("click", () => closeSubscriptionForm());
+  }
+  if (els.saveSubscriptionBtn) {
+    els.saveSubscriptionBtn.addEventListener("click", () => saveSubscription());
+  }
+
+  if (els.subscriptionsList) {
+    els.subscriptionsList.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-act]");
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (btn.dataset.act === "refresh-sub") refreshSubscription(id);
+      else if (btn.dataset.act === "delete-sub") deleteSubscription(id);
+    });
+  }
+
+  if (els.manualKeysList) {
+    els.manualKeysList.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-act]");
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (btn.dataset.act === "edit-proxy") openManualKeyForm(id);
+      else if (btn.dataset.act === "delete-proxy") deleteProxy(id);
+    });
+  }
+
+  if (els.activeProxyList) {
+    els.activeProxyList.addEventListener("change", (event) => {
+      const radio = event.target.closest('input[type="radio"][name="activeProxy"]');
+      if (!radio) return;
+      setActiveProxy(radio.value);
+    });
+  }
 
   els.addGroupBtn.addEventListener("click", () => {
     const profile = getActiveProfile();
@@ -1421,6 +1486,7 @@ function render() {
   els.domainStrategy.value = profile.domainStrategy;
   els.fallbackOutbound.value = profile.fallbackOutbound;
   renderProxyConfig(profile);
+  renderProxiesPanel(profile);
 
   renderGroups();
   renderPreview();
@@ -1892,6 +1958,428 @@ function setProbeStatus(kind, message) {
   els.proxyProbeStatus.hidden = false;
   els.proxyProbeStatus.className = `probe-status ${kind}`;
   els.proxyProbeStatus.textContent = message;
+}
+
+// --- Multi-key UI: render + CRUD ---
+
+// Tracks which proxy id the manual-key form is currently editing (null = new).
+let editingProxyId = null;
+
+function maskUrl(url) {
+  // Hide the secret token portion of subscription URLs in the list view.
+  // Keeps host + first path segment visible, masks the rest.
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    const segs = u.pathname.split("/").filter(Boolean);
+    if (segs.length === 0) return `${u.host}/`;
+    const tailMasked = segs.length > 1 ? `…***` : "***";
+    return `${u.host}/${segs[0]}/${tailMasked}`;
+  } catch {
+    return url.slice(0, 24) + "…";
+  }
+}
+
+function formatLastFetched(ts) {
+  if (!ts) return "не загружалась";
+  const diffMs = Date.now() - ts;
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return "только что";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} мин назад`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} ч назад`;
+  const days = Math.floor(hr / 24);
+  return `${days} д назад`;
+}
+
+function securityBadge(config) {
+  const sec = (config.security || "none").toLowerCase();
+  const net = (config.network || "tcp").toLowerCase();
+  const proto = (config.protocol || "vless").toLowerCase();
+  return `${proto}+${sec}+${net}`;
+}
+
+function renderProxiesPanel(profile) {
+  if (!profile) return;
+  renderSubscriptionsList(profile);
+  renderManualKeysList(profile);
+  renderActiveProxyList(profile);
+}
+
+function renderSubscriptionsList(profile) {
+  if (!els.subscriptionsList) return;
+  els.subscriptionsList.innerHTML = "";
+  const subs = profile.subscriptions || [];
+  if (subs.length === 0) {
+    const li = document.createElement("li");
+    li.className = "card-empty";
+    li.textContent = "Нет подписок. Жми «+ Подписка» чтобы добавить.";
+    els.subscriptionsList.appendChild(li);
+    return;
+  }
+  for (const sub of subs) {
+    const keysCount = (profile.proxies || []).filter((p) => p.source === sub.id).length;
+    const li = document.createElement("li");
+    li.className = "key-card";
+    li.dataset.subId = sub.id;
+    const errorBlock = sub.lastError
+      ? `<div class="card-error">⚠ ${escapeHtml(sub.lastError)}</div>`
+      : "";
+    li.innerHTML = `
+      <div class="card-main">
+        <div class="card-title">${escapeHtml(sub.name)}</div>
+        <div class="card-meta">
+          <span>${keysCount} ${keysCount === 1 ? "ключ" : keysCount < 5 ? "ключа" : "ключей"}</span>
+          <span>·</span>
+          <span>${formatLastFetched(sub.lastFetched)}</span>
+        </div>
+        <div class="card-url">${escapeHtml(maskUrl(sub.url))}</div>
+        ${errorBlock}
+      </div>
+      <div class="card-actions">
+        <button type="button" data-act="refresh-sub" data-id="${sub.id}">↻ Обновить</button>
+        <button type="button" data-act="delete-sub" data-id="${sub.id}" class="danger">✕</button>
+      </div>
+    `;
+    els.subscriptionsList.appendChild(li);
+  }
+}
+
+function renderManualKeysList(profile) {
+  if (!els.manualKeysList) return;
+  els.manualKeysList.innerHTML = "";
+  const proxies = (profile.proxies || []).filter((p) => p.source === "manual");
+  if (proxies.length === 0) {
+    const li = document.createElement("li");
+    li.className = "card-empty";
+    li.textContent = "Нет ручных ключей. Жми «+ Ручной ключ» чтобы добавить.";
+    els.manualKeysList.appendChild(li);
+    return;
+  }
+  for (const p of proxies) {
+    const li = document.createElement("li");
+    li.className = "key-card";
+    li.dataset.proxyId = p.id;
+    li.innerHTML = `
+      <div class="card-main">
+        <div class="card-title">${escapeHtml(p.name)}</div>
+        <div class="card-meta">
+          <span class="card-badge">${escapeHtml(securityBadge(p.config))}</span>
+          <span>${escapeHtml(p.config.address)}:${p.config.port}</span>
+        </div>
+      </div>
+      <div class="card-actions">
+        <button type="button" data-act="edit-proxy" data-id="${p.id}">Изм.</button>
+        <button type="button" data-act="delete-proxy" data-id="${p.id}" class="danger">✕</button>
+      </div>
+    `;
+    els.manualKeysList.appendChild(li);
+  }
+}
+
+function renderActiveProxyList(profile) {
+  if (!els.activeProxyList) return;
+  els.activeProxyList.innerHTML = "";
+  const proxies = profile.proxies || [];
+  if (proxies.length === 0) {
+    const li = document.createElement("li");
+    li.className = "card-empty";
+    li.textContent = "Сначала добавь хотя бы один ключ.";
+    els.activeProxyList.appendChild(li);
+    return;
+  }
+  const activeId = profile.activeProxyId;
+  for (const p of proxies) {
+    const sub = (profile.subscriptions || []).find((s) => s.id === p.source);
+    const srcLabel = sub ? sub.name : "ручной";
+    const li = document.createElement("li");
+    li.className = "active-row" + (p.id === activeId ? " selected" : "");
+    li.innerHTML = `
+      <label class="active-radio">
+        <input type="radio" name="activeProxy" value="${p.id}" ${p.id === activeId ? "checked" : ""}>
+        <div class="active-info">
+          <div class="active-name">${escapeHtml(p.name)}</div>
+          <div class="active-meta">
+            <span>${escapeHtml(srcLabel)}</span>
+            <span>·</span>
+            <span>${escapeHtml(securityBadge(p.config))}</span>
+            <span>·</span>
+            <span>${escapeHtml(p.config.address)}:${p.config.port}</span>
+          </div>
+        </div>
+      </label>
+    `;
+    els.activeProxyList.appendChild(li);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[c]);
+}
+
+// Form open/close
+
+function openManualKeyForm(proxyId = null) {
+  editingProxyId = proxyId;
+  els.manualKeyFormTitle.textContent = proxyId ? "Редактировать ключ" : "Новый ключ";
+  els.manualKeyForm.hidden = false;
+  els.subscriptionForm.hidden = true;
+
+  const profile = getActiveProfile();
+  if (!profile) return;
+
+  if (proxyId) {
+    const p = (profile.proxies || []).find((x) => x.id === proxyId);
+    if (p) {
+      profile.proxyConfig = { ...p.config };
+      els.manualKeyName.value = p.name;
+    }
+  } else {
+    profile.proxyConfig = createDefaultProxyConfig();
+    els.manualKeyName.value = "";
+    els.proxyImportUrl.value = "";
+  }
+  renderProxyConfig(profile);
+}
+
+function closeManualKeyForm() {
+  editingProxyId = null;
+  els.manualKeyForm.hidden = true;
+  els.proxyImportUrl.value = "";
+}
+
+function openSubscriptionForm() {
+  els.subscriptionForm.hidden = false;
+  els.manualKeyForm.hidden = true;
+  els.newSubscriptionName.value = "";
+  els.newSubscriptionUrl.value = "";
+  setSubscriptionFormStatus("info", "");
+}
+
+function closeSubscriptionForm() {
+  els.subscriptionForm.hidden = true;
+}
+
+function setSubscriptionFormStatus(kind, message) {
+  if (!els.subscriptionFormStatus) return;
+  if (!message) {
+    els.subscriptionFormStatus.hidden = true;
+    els.subscriptionFormStatus.textContent = "";
+    return;
+  }
+  els.subscriptionFormStatus.hidden = false;
+  els.subscriptionFormStatus.className = `probe-status ${kind}`;
+  els.subscriptionFormStatus.textContent = message;
+}
+
+// CRUD handlers
+
+function saveManualKey() {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const config = normalizeProxyConfig(profile.proxyConfig);
+  if (!config.address || !config.uuid) {
+    setProbeStatus("error", "Не хватает адреса или UUID. Заполни поля или вставь vless:// URI.");
+    return;
+  }
+  const name = els.manualKeyName.value.trim() || config.address;
+  if (editingProxyId) {
+    const existing = profile.proxies.find((p) => p.id === editingProxyId);
+    if (existing) {
+      existing.name = name;
+      existing.config = config;
+    }
+  } else {
+    profile.proxies.push({
+      id: `proxy-${newId()}`,
+      name,
+      source: "manual",
+      config
+    });
+    if (!profile.activeProxyId) {
+      profile.activeProxyId = profile.proxies[profile.proxies.length - 1].id;
+    }
+  }
+  closeManualKeyForm();
+  persistState();
+  renderProxiesPanel(profile);
+}
+
+function deleteProxy(proxyId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  if (!confirm("Удалить этот ключ?")) return;
+  profile.proxies = (profile.proxies || []).filter((p) => p.id !== proxyId);
+  if (profile.activeProxyId === proxyId) {
+    profile.activeProxyId = profile.proxies.length ? profile.proxies[0].id : null;
+  }
+  persistState();
+  renderProxiesPanel(profile);
+}
+
+function setActiveProxy(proxyId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  if (!(profile.proxies || []).some((p) => p.id === proxyId)) return;
+  profile.activeProxyId = proxyId;
+  persistState();
+  renderActiveProxyList(profile);
+}
+
+async function fetchSubscriptionViaBackend(url) {
+  const res = await fetch("/api/routing.cgi?kind=subscription-fetch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url })
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || `fetch failed (${res.status})`);
+  // data.raw is base64 of the HTTP body. Body itself is typically base64 of URIs.
+  const httpBody = atob(data.raw);
+  let text;
+  try {
+    let inner = httpBody.replace(/-/g, "+").replace(/_/g, "/").trim();
+    while (inner.length % 4) inner += "=";
+    text = atob(inner);
+  } catch {
+    text = httpBody;
+  }
+  return parseSubscriptionText(text);
+}
+
+async function saveSubscription() {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const name = els.newSubscriptionName.value.trim();
+  const url = els.newSubscriptionUrl.value.trim();
+  if (!url) {
+    setSubscriptionFormStatus("error", "URL не заполнен");
+    return;
+  }
+  if (!url.toLowerCase().startsWith("https://")) {
+    setSubscriptionFormStatus("error", "URL должен начинаться с https://");
+    return;
+  }
+  setSubscriptionFormStatus("info", "Загружаю…");
+  els.saveSubscriptionBtn.disabled = true;
+  try {
+    const result = await fetchSubscriptionViaBackend(url);
+    if (result.configs.length === 0) {
+      setSubscriptionFormStatus("error", "Подписка не содержит распознанных ключей");
+      return;
+    }
+    const subId = `sub-${newId()}`;
+    const sub = {
+      id: subId,
+      name: name || (new URL(url).host),
+      url,
+      lastFetched: Date.now(),
+      lastError: null
+    };
+    profile.subscriptions = profile.subscriptions || [];
+    profile.subscriptions.push(sub);
+    profile.proxies = profile.proxies || [];
+    for (const cfg of result.configs) {
+      profile.proxies.push({
+        id: `proxy-${newId()}`,
+        name: cfg.name,
+        source: subId,
+        config: cfg
+      });
+    }
+    if (!profile.activeProxyId && profile.proxies.length) {
+      profile.activeProxyId = profile.proxies.find((p) => p.source === subId).id;
+    }
+    closeSubscriptionForm();
+    persistState();
+    renderProxiesPanel(profile);
+    const msg = `Загружено ${result.configs.length} ключ(ей)` + (result.errors.length ? `, ошибок: ${result.errors.length}` : "");
+    setProbeStatus("success", msg);
+  } catch (err) {
+    setSubscriptionFormStatus("error", String(err.message || err).slice(0, 200));
+  } finally {
+    els.saveSubscriptionBtn.disabled = false;
+  }
+}
+
+async function refreshSubscription(subId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const sub = (profile.subscriptions || []).find((s) => s.id === subId);
+  if (!sub) return;
+  setProbeStatus("info", `Обновляю «${sub.name}»…`);
+  try {
+    const result = await fetchSubscriptionViaBackend(sub.url);
+    if (result.configs.length === 0) {
+      sub.lastError = "пустая подписка";
+      persistState();
+      renderProxiesPanel(profile);
+      setProbeStatus("error", `«${sub.name}»: подписка пуста`);
+      return;
+    }
+    // Diff: keep old proxies by name match, replace others
+    const oldProxies = (profile.proxies || []).filter((p) => p.source === subId);
+    const oldByKey = new Map(oldProxies.map((p) => [p.config.address + ":" + p.config.port + "/" + p.config.uuid, p]));
+    const newProxies = [];
+    let added = 0;
+    let kept = 0;
+    for (const cfg of result.configs) {
+      const key = cfg.address + ":" + cfg.port + "/" + cfg.uuid;
+      const existing = oldByKey.get(key);
+      if (existing) {
+        existing.config = cfg;
+        existing.name = cfg.name;
+        newProxies.push(existing);
+        oldByKey.delete(key);
+        kept++;
+      } else {
+        newProxies.push({
+          id: `proxy-${newId()}`,
+          name: cfg.name,
+          source: subId,
+          config: cfg
+        });
+        added++;
+      }
+    }
+    const removed = oldByKey.size;
+    profile.proxies = [
+      ...(profile.proxies || []).filter((p) => p.source !== subId),
+      ...newProxies
+    ];
+    // If active proxy was removed, fall back to first proxy of this sub (or any first)
+    if (profile.activeProxyId && !profile.proxies.some((p) => p.id === profile.activeProxyId)) {
+      profile.activeProxyId = newProxies[0]?.id || profile.proxies[0]?.id || null;
+    }
+    sub.lastFetched = Date.now();
+    sub.lastError = null;
+    persistState();
+    renderProxiesPanel(profile);
+    setProbeStatus("success", `«${sub.name}»: +${added}, ~${kept}, -${removed}`);
+  } catch (err) {
+    sub.lastError = String(err.message || err).slice(0, 200);
+    persistState();
+    renderProxiesPanel(profile);
+    setProbeStatus("error", `«${sub.name}»: ${sub.lastError}`);
+  }
+}
+
+function deleteSubscription(subId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const sub = (profile.subscriptions || []).find((s) => s.id === subId);
+  if (!sub) return;
+  if (!confirm(`Удалить подписку «${sub.name}» и все её ${(profile.proxies || []).filter((p) => p.source === subId).length} ключ(ей)?`)) return;
+  profile.subscriptions = profile.subscriptions.filter((s) => s.id !== subId);
+  profile.proxies = (profile.proxies || []).filter((p) => p.source !== subId);
+  if (profile.activeProxyId && !profile.proxies.some((p) => p.id === profile.activeProxyId)) {
+    profile.activeProxyId = profile.proxies.length ? profile.proxies[0].id : null;
+  }
+  persistState();
+  renderProxiesPanel(profile);
 }
 
 function buildOutboundsDocument(profile) {
