@@ -2466,7 +2466,13 @@ function createDefaultProxyConfig() {
     alpn: [],
     path: "",
     host: "",
-    alterId: 0
+    alterId: 0,
+    // gRPC-specific
+    serviceName: "",
+    mode: "",       // gRPC: "multi"|"gun"|"guna"  /  XHTTP: "auto"|"packet-up"|"stream-up"|"stream-one"
+    authority: "",  // gRPC :authority pseudo-header
+    // XHTTP-specific
+    xPaddingBytes: "" // e.g. "100-1000" — random padding range against DPI fingerprinting
   };
 }
 
@@ -2560,7 +2566,21 @@ function parseVlessUri(uri) {
       alpn,
       path: params.path || "",
       host: params.host || "",
-      alterId: 0
+      alterId: 0,
+      // gRPC: prefer explicit serviceName=, fall back to path= which some
+      // providers reuse for the gRPC service name.
+      serviceName: params.serviceName || params.path || "",
+      mode: params.mode || "",
+      authority: params.authority || "",
+      // XHTTP padding: providers expose either
+      //   1) `xPaddingBytes=100-1000` directly, or
+      //   2) `extra={"xPaddingBytes":"100-1000",...}` JSON-encoded.
+      // Accept both; direct param wins if present.
+      xPaddingBytes: params.xPaddingBytes || (() => {
+        if (!params.extra) return "";
+        try { return JSON.parse(params.extra).xPaddingBytes || ""; }
+        catch { return ""; }
+      })()
     }
   };
 }
@@ -2614,7 +2634,12 @@ function parseVmessUri(uri) {
       alpn,
       path: json.path || "",
       host: json.host || "",
-      alterId: parseInt(json.aid, 10) || 0
+      alterId: parseInt(json.aid, 10) || 0,
+      // gRPC: vmess legacy reuses `path` as the gRPC service name.
+      // `type` carries the mode for grpc (multi/gun).
+      serviceName: network === "grpc" ? (json.path || "") : "",
+      mode: network === "grpc" ? (json.type || "") : "",
+      authority: ""
     }
   };
 }
@@ -2676,8 +2701,30 @@ function buildStreamSettings(cfg) {
     };
   } else if (network === "grpc") {
     ss.grpcSettings = {
-      serviceName: cfg.path || ""
+      // Prefer explicit serviceName; fall back to path (vmess-legacy).
+      serviceName: cfg.serviceName || cfg.path || "",
+      // multi/gun modes — multiMode flips to true for "multi", everything
+      // else (default "gun") stays false. xray will use single-stream when
+      // multiMode is false.
+      multiMode: String(cfg.mode || "").toLowerCase() === "multi"
     };
+    if (cfg.authority) ss.grpcSettings.authority = cfg.authority;
+  } else if (network === "xhttp") {
+    // XHTTP — xray's modern transport: HTTP/2 or HTTP/3 frames that look
+    // like normal browser traffic. Best paired with Reality for DPI evasion.
+    // mode determines upload framing: "auto" lets xray pick, "stream-one"
+    // is the stealthiest single-stream variant.
+    const mode = (cfg.mode || "auto").toLowerCase();
+    ss.xhttpSettings = {
+      mode,
+      path: cfg.path || "/",
+      host: cfg.host || ""
+    };
+    // xPaddingBytes adds random padding to each frame, hiding burst-size
+    // fingerprints. Format: "min-max" or single integer.
+    if (cfg.xPaddingBytes) {
+      ss.xhttpSettings.extra = { xPaddingBytes: cfg.xPaddingBytes };
+    }
   }
 
   return ss;
