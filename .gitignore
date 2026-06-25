@@ -1,4 +1,5 @@
 .claude/
+_local/
 snapshots/
 tmp/
 tmp_*.json
