@@ -1111,6 +1111,15 @@ code { color: var(--accent-2); }
   border-color: rgba(100, 200, 100, 0.3);
 }
 
+.active-row.disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.active-row.disabled:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
 /* Override global `input { width: 100%; padding: 12px 14px }` for radio */
 .active-radio-input,
 .active-row input[type="radio"] {

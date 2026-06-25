@@ -137,6 +137,9 @@ get_kind() {
     kind=subscription-fetch|*'&kind=subscription-fetch'|kind=subscription-fetch'&'*)
       printf 'subscription-fetch'
       ;;
+    kind=singbox|*'&kind=singbox'|kind=singbox'&'*)
+      printf 'singbox'
+      ;;
     *)
       printf 'routing'
       ;;
@@ -863,6 +866,33 @@ case "$REQUEST_METHOD" in
 
     if [ "$KIND" = "subscription-fetch" ]; then
       fetch_subscription
+    fi
+
+    if [ "$KIND" = "singbox" ]; then
+      if ! grep -q '"outbounds"' "$TMP_BODY" || ! grep -q '"inbounds"' "$TMP_BODY"; then
+        cp "$TMP_BODY" /tmp/xkeen-singbox-invalid.json 2>/dev/null || true
+        json_err "invalid singbox payload (size=${BODY_SIZE:-0})"
+        rm -f "$TMP_BODY"
+        exit 0
+      fi
+
+      SINGBOX_PATH="/opt/etc/sing-box/xkeen.json"
+      SB_BAK="${SINGBOX_PATH}.bak-ui-$(date +%Y%m%d-%H%M%S)"
+      cp "$SINGBOX_PATH" "$SB_BAK" 2>/dev/null || true
+      cp "$TMP_BODY" "$SINGBOX_PATH" || {
+        json_err "failed to write sing-box config"
+        rm -f "$TMP_BODY"
+        exit 0
+      }
+
+      # sing-box validates its own config at start; failure leaves the
+      # service down and the next selfheal cycle will notice. We accept the
+      # write either way — UI is the source of truth on this path.
+      /opt/etc/init.d/S24antigoblin-singbox restart >/dev/null 2>&1 || true
+
+      json_ok "{\"ok\":true,\"singbox\":\"$SINGBOX_PATH\"}"
+      rm -f "$TMP_BODY"
+      exit 0
     fi
 
     if [ "$KIND" = "restart-svc" ]; then

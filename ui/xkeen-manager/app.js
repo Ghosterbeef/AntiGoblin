@@ -2,6 +2,7 @@ const STORAGE_KEY = "xkeen-manager-state-v7";
 const LANGUAGE_KEY = "xkeen-manager-lang-v1";
 const STATE_URL = "./api/routing.cgi?kind=state";
 const OUTBOUNDS_URL = "./api/routing.cgi?kind=outbounds";
+const SINGBOX_URL = "./api/routing.cgi?kind=singbox";
 const PROBE_URL = "./api/routing.cgi?kind=probe";
 const REPAIR_URL = "./api/routing.cgi?kind=repair-runtime";
 const LOGIN_URL = "./api/routing.cgi?kind=login";
@@ -651,13 +652,43 @@ function bindTopLevel() {
   bindMuxField(els.muxXudpConcurrency, "xudpConcurrency", (value) => clampInt(value, 8, 1, 1024));
 
   els.importProxyBtn.addEventListener("click", () => {
+    const raw = (els.proxyImportUrl.value || "").trim();
+    const profile = getActiveProfile();
+    if (!profile) return;
+
+    // Multi-protocol: vmess and hysteria2 don't fit the legacy "fill form
+    // fields" flow (their schemas differ), so we add them directly as a
+    // proxy entry and close the form.
+    let parsed = null;
+    if (/^(hysteria2|hy2):\/\//i.test(raw)) parsed = parseHysteria2Uri(raw);
+    else if (/^vmess:\/\//i.test(raw)) parsed = parseVmessUri(raw);
+
+    if (parsed) {
+      if (!parsed.ok) {
+        setProbeStatus("error", `Ошибка импорта: ${parsed.error}`);
+        return;
+      }
+      const newProxy = {
+        id: `proxy-${newId()}`,
+        name: (els.manualKeyName?.value || "").trim() || parsed.config.name || parsed.config.address,
+        source: "manual",
+        config: parsed.config
+      };
+      profile.proxies = profile.proxies || [];
+      profile.proxies.push(newProxy);
+      if (!profile.activeProxyId) profile.activeProxyId = newProxy.id;
+      closeManualKeyForm();
+      persistState();
+      renderProxiesPanel(profile);
+      return;
+    }
+
+    // Legacy vless flow: populate the form fields so the user can review.
     try {
-      const parsed = parseVlessUrl(els.proxyImportUrl.value);
-      const profile = getActiveProfile();
-      if (!profile) return;
+      const fromForm = parseVlessUrl(raw);
       profile.proxyConfig = {
         ...normalizeProxyConfig(profile.proxyConfig),
-        ...parsed
+        ...fromForm
       };
       persistState();
       renderProxyConfig(profile);
@@ -905,6 +936,7 @@ function bindTopLevel() {
     try {
       await saveRemoteState();
       await saveRemoteOutbounds();
+      await saveRemoteSingbox();
       const routingResponse = await fetch(LIVE_ROUTING_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -954,6 +986,22 @@ async function saveRemoteOutbounds() {
   const outboundsPayload = await outboundsResponse.json();
   if (!outboundsResponse.ok || outboundsPayload.ok === false) {
     throw new Error(outboundsResponse.status === 401 ? AUTH_REQUIRED_MESSAGE : (outboundsPayload.error || `HTTP ${outboundsResponse.status}`));
+  }
+}
+
+async function saveRemoteSingbox() {
+  const profile = getActiveProfile();
+  if (!profile) throw new Error("active profile missing");
+  const response = await fetch(SINGBOX_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    body: JSON.stringify(buildSingboxDocument(profile))
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.ok === false) {
+    throw new Error(response.status === 401 ? AUTH_REQUIRED_MESSAGE : (payload.error || `HTTP ${response.status}`));
   }
 }
 
@@ -1998,7 +2046,14 @@ function securityBadge(config) {
   const sec = (config.security || "none").toLowerCase();
   const net = (config.network || "tcp").toLowerCase();
   const proto = (config.protocol || "vless").toLowerCase();
+  if (proto === "hysteria2") return "hy2+tls+quic";
   return `${proto}+${sec}+${net}`;
+}
+
+// All parsed protocols are now activatable. Kept as a function so future
+// "preview only" transports can opt out without touching every call site.
+function isProxyActivatable(_config) {
+  return true;
 }
 
 function renderProxiesPanel(profile) {
@@ -2102,11 +2157,15 @@ function renderActiveProxyList(profile) {
   for (const p of proxies) {
     const sub = (profile.subscriptions || []).find((s) => s.id === p.source);
     const srcLabel = sub ? sub.name : "ручной";
+    const activatable = isProxyActivatable(p.config);
     const li = document.createElement("li");
-    li.className = "active-row" + (p.id === activeId ? " selected" : "");
+    li.className = "active-row"
+      + (p.id === activeId ? " selected" : "")
+      + (activatable ? "" : " disabled");
     li.dataset.proxyId = p.id;
+    if (!activatable) li.title = "Hysteria2 ещё не интегрирован — Phase B/C";
     li.innerHTML = `
-      <input type="radio" name="activeProxy" value="${p.id}" ${p.id === activeId ? "checked" : ""} class="active-radio-input">
+      <input type="radio" name="activeProxy" value="${p.id}" ${p.id === activeId ? "checked" : ""} class="active-radio-input"${activatable ? "" : " disabled"}>
       <div class="active-info">
         <div class="active-name">${escapeHtml(p.name)}</div>
         <div class="active-meta">
@@ -2230,7 +2289,16 @@ function deleteProxy(proxyId) {
 function setActiveProxy(proxyId) {
   const profile = getActiveProfile();
   if (!profile) return;
-  if (!(profile.proxies || []).some((p) => p.id === proxyId)) return;
+  const proxy = (profile.proxies || []).find((p) => p.id === proxyId);
+  if (!proxy) return;
+  if (!isProxyActivatable(proxy.config)) {
+    showToast(
+      "Hysteria2 ещё не интегрирован с sing-box. Парсер работает, выбрать активным пока нельзя.",
+      { variant: "warning", durationMs: 5000 }
+    );
+    renderActiveProxyList(profile); // restore visual selection
+    return;
+  }
   profile.activeProxyId = proxyId;
   persistState();
   renderActiveProxyList(profile);
@@ -2389,10 +2457,35 @@ function deleteSubscription(subId) {
   renderProxiesPanel(profile);
 }
 
+// Localhost port where sing-box exposes a mixed (SOCKS5) inbound for xray to
+// forward TCP traffic into when the active proxy is hysteria2. xray treats
+// the relay as a normal SOCKS5 upstream; sing-box does the real tunneling.
+const SINGBOX_XRAY_RELAY_PORT = 61225;
+
 function buildOutboundsDocument(profile) {
   const config = getActiveProxyConfig(profile);
   const mux = buildMuxObject(profile.muxConfig);
   const protocol = (config.protocol || "vless").toLowerCase();
+
+  // Hysteria2 is not xray-native. We keep the "vless-reality" tag (routing
+  // rules reference it everywhere) but route the outbound through sing-box
+  // via SOCKS5. sing-box owns the real hysteria2 outbound.
+  if (protocol === "hysteria2") {
+    return {
+      outbounds: [
+        {
+          tag: "vless-reality",
+          protocol: "socks",
+          settings: {
+            servers: [
+              { address: "127.0.0.1", port: SINGBOX_XRAY_RELAY_PORT }
+            ]
+          }
+        },
+        { protocol: "freedom", tag: "direct" }
+      ]
+    };
+  }
 
   // user block differs by protocol; xray keeps the outbound tag "vless-reality"
   // for compatibility with existing routing.json rules even when we ship vmess.
@@ -2423,6 +2516,80 @@ function buildOutboundsDocument(profile) {
       }
     ]
   };
+}
+
+// Build the sing-box config that matches the currently selected proxy.
+// - For vless/vmess (xray-native): keeps the existing shape (UDP TPROXY ->
+//   shadowsocks-relay -> xray). xray does the real tunneling.
+// - For hysteria2: adds a mixed inbound on 127.0.0.1:SINGBOX_XRAY_RELAY_PORT
+//   (so xray can SOCKS into us) and a hysteria2 outbound to the server.
+//   All routes terminate at hysteria2.
+function buildSingboxDocument(profile) {
+  const config = getActiveProxyConfig(profile);
+  const protocol = (config.protocol || "vless").toLowerCase();
+
+  const base = {
+    log: { level: "warn", timestamp: true },
+    inbounds: [
+      {
+        type: "tproxy",
+        tag: "xkeen-udp-tproxy",
+        listen: "0.0.0.0",
+        listen_port: 61221,
+        network: "udp"
+      }
+    ],
+    outbounds: [],
+    route: {
+      rules: [{ ip_is_private: true, outbound: "direct" }],
+      final: "proxy"
+    }
+  };
+
+  if (protocol === "hysteria2") {
+    base.inbounds.push({
+      type: "mixed",
+      tag: "xray-relay",
+      listen: "127.0.0.1",
+      listen_port: SINGBOX_XRAY_RELAY_PORT
+    });
+    const hy2 = {
+      type: "hysteria2",
+      tag: "proxy",
+      server: config.address,
+      server_port: Number(config.port),
+      password: config.password || "",
+      tls: {
+        enabled: true,
+        server_name: config.serverName || config.address,
+        insecure: !!config.insecure
+      }
+    };
+    if (Array.isArray(config.alpn) && config.alpn.length) {
+      hy2.tls.alpn = config.alpn.slice();
+    }
+    if (config.obfs) {
+      hy2.obfs = { type: config.obfs, password: config.obfsPassword || "" };
+    }
+    if (config.pinSHA256) {
+      hy2.tls.certificate_pin_sha256 = [config.pinSHA256];
+    }
+    base.outbounds.push(hy2);
+  } else {
+    // Default: relay UDP into xray's shadowsocks listener so it can tunnel
+    // via the active VLESS/VMess outbound (same path that worked for months).
+    base.outbounds.push({
+      type: "shadowsocks",
+      tag: "proxy",
+      server: "127.0.0.1",
+      server_port: 62640,
+      method: "none",
+      password: "none"
+    });
+  }
+
+  base.outbounds.push({ type: "direct", tag: "direct" });
+  return base;
 }
 
 function extractProxyConfig(doc) {
@@ -2471,8 +2638,18 @@ function createDefaultProxyConfig() {
     serviceName: "",
     mode: "",       // gRPC: "multi"|"gun"|"guna"  /  XHTTP: "auto"|"packet-up"|"stream-up"|"stream-one"
     authority: "",  // gRPC :authority pseudo-header
-    // XHTTP-specific
-    xPaddingBytes: "" // e.g. "100-1000" — random padding range against DPI fingerprinting
+    // XHTTP-specific. xhttpExtra carries the full provider-supplied JSON
+    // (scMaxEachPostBytes, scMaxConcurrentPosts, scMinPostsIntervalMs,
+    // xPaddingBytes, noGRPCHeader, etc). xPaddingBytes stays as a top-level
+    // shortcut so older keys still work, but the full extra wins when set.
+    xPaddingBytes: "",
+    xhttpExtra: null,
+    // Hysteria2-specific (UDP/QUIC protocol, NOT xray-native)
+    password: "",         // auth secret (vless/vmess use uuid, hy2 uses password)
+    obfs: "",             // "salamander" or empty
+    obfsPassword: "",
+    insecure: false,      // skip TLS cert verify
+    pinSHA256: ""         // pinned cert fingerprint
   };
 }
 
@@ -2537,8 +2714,12 @@ function parseVlessUri(uri) {
     const eqIdx = pair.indexOf("=");
     const key = eqIdx < 0 ? pair : pair.slice(0, eqIdx);
     const val = eqIdx < 0 ? "" : pair.slice(eqIdx + 1);
-    try { params[key] = decodeURIComponent(val); }
-    catch { params[key] = val; }
+    // application/x-www-form-urlencoded: `+` decodes to a space.
+    // decodeURIComponent keeps `+` literal, so subscription providers that
+    // pack JSON into extra=... (which has spaces) end up with invalid JSON.
+    const decoded = val.replace(/\+/g, " ");
+    try { params[key] = decodeURIComponent(decoded); }
+    catch { params[key] = decoded; }
   }
 
   const security = (params.security || "").toLowerCase() || "none";
@@ -2572,14 +2753,21 @@ function parseVlessUri(uri) {
       serviceName: params.serviceName || params.path || "",
       mode: params.mode || "",
       authority: params.authority || "",
-      // XHTTP padding: providers expose either
+      // XHTTP padding shortcut. Providers expose either
       //   1) `xPaddingBytes=100-1000` directly, or
       //   2) `extra={"xPaddingBytes":"100-1000",...}` JSON-encoded.
-      // Accept both; direct param wins if present.
       xPaddingBytes: params.xPaddingBytes || (() => {
         if (!params.extra) return "";
         try { return JSON.parse(params.extra).xPaddingBytes || ""; }
         catch { return ""; }
+      })(),
+      // Full XHTTP extra blob — pass-through so all scMax* / noGRPCHeader /
+      // future fields reach xray verbatim. Server-side configs are picky:
+      // missing scMaxEachPostBytes etc. silently breaks stream-up handshake.
+      xhttpExtra: (() => {
+        if (!params.extra) return null;
+        try { return JSON.parse(params.extra); }
+        catch { return null; }
       })()
     }
   };
@@ -2644,6 +2832,95 @@ function parseVmessUri(uri) {
   };
 }
 
+// Parse a hysteria2:// or hy2:// URI.
+// Format: hysteria2://password@host:port?sni=...&obfs=salamander&obfs-password=...
+//                                          &insecure=0|1&pinSHA256=...&alpn=h3#name
+// Hysteria2 is UDP/QUIC, not xray-native — applying it requires sing-box.
+// Phase A only parses + displays; activation is gated separately.
+function parseHysteria2Uri(uri) {
+  if (typeof uri !== "string") return { ok: false, error: "not a string" };
+  const trimmed = uri.trim();
+  if (!/^(hysteria2|hy2):\/\//i.test(trimmed)) return { ok: false, error: "not hysteria2://" };
+
+  let body = trimmed.replace(/^(hysteria2|hy2):\/\//i, "");
+  let name = "";
+  const hashIdx = body.indexOf("#");
+  if (hashIdx >= 0) {
+    try { name = decodeURIComponent(body.slice(hashIdx + 1)); }
+    catch { name = body.slice(hashIdx + 1); }
+    body = body.slice(0, hashIdx);
+  }
+
+  let queryStr = "";
+  const queryIdx = body.indexOf("?");
+  if (queryIdx >= 0) {
+    queryStr = body.slice(queryIdx + 1);
+    body = body.slice(0, queryIdx);
+  }
+
+  const atIdx = body.indexOf("@");
+  if (atIdx < 0) return { ok: false, error: "missing @ in hysteria2 URI" };
+  let password = body.slice(0, atIdx);
+  try { password = decodeURIComponent(password); } catch { /* keep raw */ }
+  const hostPort = body.slice(atIdx + 1);
+  if (!password || !hostPort) return { ok: false, error: "empty password or host" };
+
+  const colonIdx = hostPort.lastIndexOf(":");
+  if (colonIdx < 0) return { ok: false, error: "missing port" };
+  const host = hostPort.slice(0, colonIdx).replace(/^\[|\]$/g, "");
+  const port = parseInt(hostPort.slice(colonIdx + 1), 10);
+  if (!host || !Number.isFinite(port) || port < 1 || port > 65535) {
+    return { ok: false, error: "invalid host or port" };
+  }
+
+  const params = {};
+  for (const pair of queryStr.split("&")) {
+    if (!pair) continue;
+    const eqIdx = pair.indexOf("=");
+    const key = eqIdx < 0 ? pair : pair.slice(0, eqIdx);
+    const val = eqIdx < 0 ? "" : pair.slice(eqIdx + 1);
+    try { params[key] = decodeURIComponent(val); }
+    catch { params[key] = val; }
+  }
+
+  const alpn = params.alpn
+    ? params.alpn.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  return {
+    ok: true,
+    config: {
+      protocol: "hysteria2",
+      name: name || `${host}:${port}`,
+      address: host,
+      port,
+      uuid: "",                   // hy2 uses password, not uuid
+      password,
+      flow: "",
+      network: "udp",             // QUIC over UDP
+      security: "tls",            // always TLS
+      serverName: params.sni || params.serverName || host,
+      fingerprint: params.fp || "",
+      publicKey: "",
+      shortId: "",
+      spiderX: "/",
+      alpn: alpn.length ? alpn : ["h3"],
+      path: "",
+      host: "",
+      alterId: 0,
+      serviceName: "",
+      mode: "",
+      authority: "",
+      xPaddingBytes: "",
+      // Hysteria2-specific
+      obfs: params.obfs || "",
+      obfsPassword: params["obfs-password"] || params.obfsPassword || "",
+      insecure: params.insecure === "1" || params.insecure === "true",
+      pinSHA256: params.pinSHA256 || params["pin-sha256"] || ""
+    }
+  };
+}
+
 // Parse a subscription body (already base64-decoded by caller).
 // Each non-empty line is a URI; unknown schemes are skipped silently.
 function parseSubscriptionText(rawText) {
@@ -2656,6 +2933,7 @@ function parseSubscriptionText(rawText) {
     let result = null;
     if (/^vless:\/\//i.test(trimmed)) result = parseVlessUri(trimmed);
     else if (/^vmess:\/\//i.test(trimmed)) result = parseVmessUri(trimmed);
+    else if (/^(hysteria2|hy2):\/\//i.test(trimmed)) result = parseHysteria2Uri(trimmed);
     else continue;
     if (result.ok) configs.push(result.config);
     else errors.push({ line: trimmed.slice(0, 80), error: result.error });
@@ -2720,9 +2998,13 @@ function buildStreamSettings(cfg) {
       path: cfg.path || "/",
       host: cfg.host || ""
     };
-    // xPaddingBytes adds random padding to each frame, hiding burst-size
-    // fingerprints. Format: "min-max" or single integer.
-    if (cfg.xPaddingBytes) {
+    // `extra` carries the stream-up tuning that servers really care about
+    // (scMaxEachPostBytes, scMaxConcurrentPosts, scMinPostsIntervalMs,
+    // xPaddingBytes, noGRPCHeader). Prefer the full provider-supplied blob;
+    // fall back to the xPaddingBytes shortcut so older keys still work.
+    if (cfg.xhttpExtra && typeof cfg.xhttpExtra === "object") {
+      ss.xhttpSettings.extra = cfg.xhttpExtra;
+    } else if (cfg.xPaddingBytes) {
       ss.xhttpSettings.extra = { xPaddingBytes: cfg.xPaddingBytes };
     }
   }
@@ -2852,11 +3134,11 @@ function cloneProfile(profile) {
 function normalizeProxyEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
   const config = normalizeProxyConfig(entry.config);
-  if (!config.address || !config.uuid) return null;
+  // vless/vmess authenticate by uuid; hysteria2 by password. Accept either.
+  const hasAuth = config.uuid || config.password;
+  if (!config.address || !hasAuth) return null;
   return {
     id: entry.id || `proxy-${newId()}`,
-    // Prefer the user-supplied name; fall back to the real address, NOT the
-    // SNI (Reality serverName is camouflage and confuses users).
     name: String(entry.name || config.address || "Unnamed"),
     source: entry.source || "manual",
     config
