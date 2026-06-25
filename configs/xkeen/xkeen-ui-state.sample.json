@@ -6,16 +6,9 @@
       "name": "Profile 1",
       "domainStrategy": "IPIfNonMatch",
       "fallbackOutbound": "direct",
-      "proxyConfig": {
-        "address": "vpn.example.com",
-        "port": 443,
-        "uuid": "00000000-0000-0000-0000-000000000000",
-        "flow": "xtls-rprx-vision",
-        "publicKey": "YOUR_REALITY_PUBLIC_KEY",
-        "serverName": "www.cloudflare.com",
-        "shortId": "0123456789abcdef",
-        "fingerprint": "random"
-      },
+      "proxies": [],
+      "subscriptions": [],
+      "activeProxyId": null,
       "muxConfig": {
         "mode": "off",
         "tcpConcurrency": 8,

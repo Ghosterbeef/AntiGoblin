@@ -2,6 +2,7 @@ const STORAGE_KEY = "xkeen-manager-state-v7";
 const LANGUAGE_KEY = "xkeen-manager-lang-v1";
 const STATE_URL = "./api/routing.cgi?kind=state";
 const OUTBOUNDS_URL = "./api/routing.cgi?kind=outbounds";
+const SINGBOX_URL = "./api/routing.cgi?kind=singbox";
 const PROBE_URL = "./api/routing.cgi?kind=probe";
 const REPAIR_URL = "./api/routing.cgi?kind=repair-runtime";
 const LOGIN_URL = "./api/routing.cgi?kind=login";
@@ -412,6 +413,22 @@ const els = {
   importProxyBtn: document.getElementById("importProxyBtn"),
   probeProxyBtn: document.getElementById("probeProxyBtn"),
   proxyProbeStatus: document.getElementById("proxyProbeStatus"),
+  addManualKeyBtn: document.getElementById("addManualKeyBtn"),
+  addSubscriptionBtn: document.getElementById("addSubscriptionBtn"),
+  subscriptionsList: document.getElementById("subscriptionsList"),
+  manualKeysList: document.getElementById("manualKeysList"),
+  activeProxyList: document.getElementById("activeProxyList"),
+  manualKeyForm: document.getElementById("manualKeyForm"),
+  manualKeyFormTitle: document.getElementById("manualKeyFormTitle"),
+  manualKeyName: document.getElementById("manualKeyName"),
+  saveManualKeyBtn: document.getElementById("saveManualKeyBtn"),
+  cancelManualKeyBtn: document.getElementById("cancelManualKeyBtn"),
+  subscriptionForm: document.getElementById("subscriptionForm"),
+  newSubscriptionName: document.getElementById("newSubscriptionName"),
+  newSubscriptionUrl: document.getElementById("newSubscriptionUrl"),
+  subscriptionFormStatus: document.getElementById("subscriptionFormStatus"),
+  saveSubscriptionBtn: document.getElementById("saveSubscriptionBtn"),
+  cancelSubscriptionBtn: document.getElementById("cancelSubscriptionBtn"),
   previewKicker: document.getElementById("previewKicker"),
   previewTitle: document.getElementById("previewTitle"),
   groups: document.getElementById("groups"),
@@ -635,13 +652,43 @@ function bindTopLevel() {
   bindMuxField(els.muxXudpConcurrency, "xudpConcurrency", (value) => clampInt(value, 8, 1, 1024));
 
   els.importProxyBtn.addEventListener("click", () => {
+    const raw = (els.proxyImportUrl.value || "").trim();
+    const profile = getActiveProfile();
+    if (!profile) return;
+
+    // Multi-protocol: vmess and hysteria2 don't fit the legacy "fill form
+    // fields" flow (their schemas differ), so we add them directly as a
+    // proxy entry and close the form.
+    let parsed = null;
+    if (/^(hysteria2|hy2):\/\//i.test(raw)) parsed = parseHysteria2Uri(raw);
+    else if (/^vmess:\/\//i.test(raw)) parsed = parseVmessUri(raw);
+
+    if (parsed) {
+      if (!parsed.ok) {
+        setProbeStatus("error", `Ошибка импорта: ${parsed.error}`);
+        return;
+      }
+      const newProxy = {
+        id: `proxy-${newId()}`,
+        name: (els.manualKeyName?.value || "").trim() || parsed.config.name || parsed.config.address,
+        source: "manual",
+        config: parsed.config
+      };
+      profile.proxies = profile.proxies || [];
+      profile.proxies.push(newProxy);
+      if (!profile.activeProxyId) profile.activeProxyId = newProxy.id;
+      closeManualKeyForm();
+      persistState();
+      renderProxiesPanel(profile);
+      return;
+    }
+
+    // Legacy vless flow: populate the form fields so the user can review.
     try {
-      const parsed = parseVlessUrl(els.proxyImportUrl.value);
-      const profile = getActiveProfile();
-      if (!profile) return;
+      const fromForm = parseVlessUrl(raw);
       profile.proxyConfig = {
         ...normalizeProxyConfig(profile.proxyConfig),
-        ...parsed
+        ...fromForm
       };
       persistState();
       renderProxyConfig(profile);
@@ -655,7 +702,7 @@ function bindTopLevel() {
   els.probeProxyBtn.addEventListener("click", async () => {
     const profile = getActiveProfile();
     if (!profile) return;
-    const config = normalizeProxyConfig(profile.proxyConfig);
+    const config = getActiveProxyConfig(profile);
     const toast = showToast(formatMessage(T.toastProbing || "Проверка {addr}:{port}...", { addr: config.address, port: config.port }), { kind: "progress" });
     try {
       const probe = await probeProxy(config);
@@ -669,6 +716,60 @@ function bindTopLevel() {
       toast.update(`${T.probeError}: ${error.message}`, "error");
     }
   });
+
+  // --- Multi-key UI wiring ---
+
+  if (els.addManualKeyBtn) {
+    els.addManualKeyBtn.addEventListener("click", () => openManualKeyForm(null));
+  }
+  if (els.addSubscriptionBtn) {
+    els.addSubscriptionBtn.addEventListener("click", () => openSubscriptionForm());
+  }
+  if (els.cancelManualKeyBtn) {
+    els.cancelManualKeyBtn.addEventListener("click", () => closeManualKeyForm());
+  }
+  if (els.saveManualKeyBtn) {
+    els.saveManualKeyBtn.addEventListener("click", () => saveManualKey());
+  }
+  if (els.cancelSubscriptionBtn) {
+    els.cancelSubscriptionBtn.addEventListener("click", () => closeSubscriptionForm());
+  }
+  if (els.saveSubscriptionBtn) {
+    els.saveSubscriptionBtn.addEventListener("click", () => saveSubscription());
+  }
+
+  if (els.subscriptionsList) {
+    els.subscriptionsList.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-act]");
+      if (!btn) return;
+      const id = btn.dataset.id;
+      switch (btn.dataset.act) {
+        case "refresh-sub": refreshSubscription(id); break;
+        case "delete-sub":  deleteSubscription(id); break;
+        case "reveal-sub":  toggleRevealSub(id); break;
+        case "copy-sub":    copySubUrl(id); break;
+      }
+    });
+  }
+
+  if (els.manualKeysList) {
+    els.manualKeysList.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-act]");
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (btn.dataset.act === "edit-proxy") openManualKeyForm(id);
+      else if (btn.dataset.act === "delete-proxy") deleteProxy(id);
+    });
+  }
+
+  if (els.activeProxyList) {
+    els.activeProxyList.addEventListener("click", (event) => {
+      const row = event.target.closest(".active-row");
+      if (!row) return;
+      const proxyId = row.dataset.proxyId;
+      if (proxyId) setActiveProxy(proxyId);
+    });
+  }
 
   els.addGroupBtn.addEventListener("click", () => {
     const profile = getActiveProfile();
@@ -839,6 +940,7 @@ function bindTopLevel() {
     try {
       await saveRemoteState();
       await saveRemoteOutbounds();
+      await saveRemoteSingbox();
       const routingResponse = await fetch(LIVE_ROUTING_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -888,6 +990,22 @@ async function saveRemoteOutbounds() {
   const outboundsPayload = await outboundsResponse.json();
   if (!outboundsResponse.ok || outboundsPayload.ok === false) {
     throw new Error(outboundsResponse.status === 401 ? AUTH_REQUIRED_MESSAGE : (outboundsPayload.error || `HTTP ${outboundsResponse.status}`));
+  }
+}
+
+async function saveRemoteSingbox() {
+  const profile = getActiveProfile();
+  if (!profile) throw new Error("active profile missing");
+  const response = await fetch(SINGBOX_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    body: JSON.stringify(buildSingboxDocument(profile))
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.ok === false) {
+    throw new Error(response.status === 401 ? AUTH_REQUIRED_MESSAGE : (payload.error || `HTTP ${response.status}`));
   }
 }
 
@@ -1421,6 +1539,7 @@ function render() {
   els.domainStrategy.value = profile.domainStrategy;
   els.fallbackOutbound.value = profile.fallbackOutbound;
   renderProxyConfig(profile);
+  renderProxiesPanel(profile);
 
   renderGroups();
   renderPreview();
@@ -1894,41 +2013,584 @@ function setProbeStatus(kind, message) {
   els.proxyProbeStatus.textContent = message;
 }
 
-function buildOutboundsDocument(profile) {
+// --- Multi-key UI: render + CRUD ---
+
+// Tracks which proxy id the manual-key form is currently editing (null = new).
+let editingProxyId = null;
+
+function maskUrl(url) {
+  // Hide the secret token portion of subscription URLs in the list view.
+  // Keeps host + first path segment visible, masks the rest.
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    const segs = u.pathname.split("/").filter(Boolean);
+    if (segs.length === 0) return `${u.host}/`;
+    const tailMasked = segs.length > 1 ? `…***` : "***";
+    return `${u.host}/${segs[0]}/${tailMasked}`;
+  } catch {
+    return url.slice(0, 24) + "…";
+  }
+}
+
+function formatLastFetched(ts) {
+  if (!ts) return "не загружалась";
+  const diffMs = Date.now() - ts;
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return "только что";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} мин назад`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} ч назад`;
+  const days = Math.floor(hr / 24);
+  return `${days} д назад`;
+}
+
+function securityBadge(config) {
+  const sec = (config.security || "none").toLowerCase();
+  const net = (config.network || "tcp").toLowerCase();
+  const proto = (config.protocol || "vless").toLowerCase();
+  if (proto === "hysteria2") return "hy2+tls+quic";
+  return `${proto}+${sec}+${net}`;
+}
+
+// All parsed protocols are now activatable. Kept as a function so future
+// "preview only" transports can opt out without touching every call site.
+function isProxyActivatable(_config) {
+  return true;
+}
+
+function renderProxiesPanel(profile) {
+  if (!profile) return;
+  renderSubscriptionsList(profile);
+  renderManualKeysList(profile);
+  renderActiveProxyList(profile);
+}
+
+function renderSubscriptionsList(profile) {
+  if (!els.subscriptionsList) return;
+  els.subscriptionsList.innerHTML = "";
+  const subs = profile.subscriptions || [];
+  if (subs.length === 0) {
+    // Hide the empty hint entirely if user already has any keys in the
+    // other section — keeps the UI quiet once setup is done.
+    const hasAnyProxies = (profile.proxies || []).length > 0;
+    if (hasAnyProxies) return;
+    const li = document.createElement("li");
+    li.className = "card-empty";
+    li.textContent = "Нет подписок. Жми «+ Подписка» чтобы добавить.";
+    els.subscriptionsList.appendChild(li);
+    return;
+  }
+  for (const sub of subs) {
+    const keysCount = (profile.proxies || []).filter((p) => p.source === sub.id).length;
+    const li = document.createElement("li");
+    li.className = "key-card";
+    li.dataset.subId = sub.id;
+    const errorBlock = sub.lastError
+      ? `<div class="card-error">⚠ ${escapeHtml(sub.lastError)}</div>`
+      : "";
+    const isRevealed = revealedSubs.has(sub.id);
+    const isBusy = refreshingSubs.has(sub.id);
+    const urlDisplay = isRevealed ? sub.url : maskUrl(sub.url);
+    li.innerHTML = `
+      <div class="card-main">
+        <div class="card-title">${escapeHtml(sub.name)}</div>
+        <div class="card-meta">
+          <span>${keysCount} ${keysCount === 1 ? "ключ" : keysCount < 5 ? "ключа" : "ключей"}</span>
+          <span>·</span>
+          <span>${formatLastFetched(sub.lastFetched)}</span>
+        </div>
+        <div class="card-url${isRevealed ? " revealed" : ""}" title="${escapeHtml(isRevealed ? sub.url : "Показать URL — кнопка 👁")}">${escapeHtml(urlDisplay)}</div>
+        ${errorBlock}
+      </div>
+      <div class="card-actions">
+        <button type="button" data-act="reveal-sub" data-id="${sub.id}" title="${isRevealed ? "Скрыть URL" : "Показать URL"}">${isRevealed ? "🙈" : "👁"}</button>
+        <button type="button" data-act="copy-sub" data-id="${sub.id}" title="Скопировать URL">📋</button>
+        <button type="button" data-act="refresh-sub" data-id="${sub.id}"${isBusy ? " disabled" : ""}>${isBusy ? "⏳…" : "↻ Обновить"}</button>
+        <button type="button" data-act="delete-sub" data-id="${sub.id}" class="danger">✕</button>
+      </div>
+    `;
+    els.subscriptionsList.appendChild(li);
+  }
+}
+
+// Tracks subs currently mid-refresh (used to disable the button and swap
+// label to a spinner glyph) and subs whose full URL is temporarily revealed.
+const refreshingSubs = new Set();
+const revealedSubs = new Set();
+const revealedTimers = new Map();
+
+function toggleRevealSub(subId) {
+  if (revealedSubs.has(subId)) {
+    revealedSubs.delete(subId);
+    const t = revealedTimers.get(subId);
+    if (t) { clearTimeout(t); revealedTimers.delete(subId); }
+  } else {
+    revealedSubs.add(subId);
+    // auto-hide after 10s so it doesn't stay open on shared screens
+    const t = setTimeout(() => {
+      revealedSubs.delete(subId);
+      revealedTimers.delete(subId);
+      const profile = getActiveProfile();
+      if (profile) renderSubscriptionsList(profile);
+    }, 10000);
+    revealedTimers.set(subId, t);
+  }
+  const profile = getActiveProfile();
+  if (profile) renderSubscriptionsList(profile);
+}
+
+async function copySubUrl(subId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const sub = (profile.subscriptions || []).find((s) => s.id === subId);
+  if (!sub) return;
+  try {
+    await navigator.clipboard.writeText(sub.url);
+    showToast(`URL «${sub.name}» скопирован`, { kind: "success", ttl: 2000 });
+  } catch (err) {
+    // Fallback for non-secure contexts: present in a prompt() so user can copy
+    window.prompt("Скопируй URL вручную:", sub.url);
+  }
+}
+
+function renderManualKeysList(profile) {
+  if (!els.manualKeysList) return;
+  els.manualKeysList.innerHTML = "";
+  const proxies = (profile.proxies || []).filter((p) => p.source === "manual");
+  if (proxies.length === 0) {
+    // Skip the empty hint if user already has a subscription with proxies.
+    const hasSubProxies = (profile.proxies || []).some((p) => p.source !== "manual");
+    const hasSubs = (profile.subscriptions || []).length > 0;
+    if (hasSubProxies || hasSubs) return;
+    const li = document.createElement("li");
+    li.className = "card-empty";
+    li.textContent = "Нет ручных ключей. Жми «+ Ручной ключ» чтобы добавить.";
+    els.manualKeysList.appendChild(li);
+    return;
+  }
+  for (const p of proxies) {
+    const li = document.createElement("li");
+    li.className = "key-card";
+    li.dataset.proxyId = p.id;
+    li.innerHTML = `
+      <div class="card-main">
+        <div class="card-title">${escapeHtml(p.name)}</div>
+        <div class="card-meta">
+          <span class="card-badge">${escapeHtml(securityBadge(p.config))}</span>
+          <span>${escapeHtml(p.config.address)}:${p.config.port}</span>
+        </div>
+      </div>
+      <div class="card-actions">
+        <button type="button" data-act="edit-proxy" data-id="${p.id}">Изм.</button>
+        <button type="button" data-act="delete-proxy" data-id="${p.id}" class="danger">✕</button>
+      </div>
+    `;
+    els.manualKeysList.appendChild(li);
+  }
+}
+
+function renderActiveProxyList(profile) {
+  if (!els.activeProxyList) return;
+  els.activeProxyList.innerHTML = "";
+  const proxies = profile.proxies || [];
+  if (proxies.length === 0) {
+    const li = document.createElement("li");
+    li.className = "card-empty";
+    li.textContent = "Сначала добавь хотя бы один ключ.";
+    els.activeProxyList.appendChild(li);
+    return;
+  }
+  const activeId = profile.activeProxyId;
+  for (const p of proxies) {
+    const sub = (profile.subscriptions || []).find((s) => s.id === p.source);
+    const srcLabel = sub ? sub.name : "ручной";
+    const activatable = isProxyActivatable(p.config);
+    const li = document.createElement("li");
+    li.className = "active-row"
+      + (p.id === activeId ? " selected" : "")
+      + (activatable ? "" : " disabled");
+    li.dataset.proxyId = p.id;
+    if (!activatable) li.title = "Hysteria2 ещё не интегрирован — Phase B/C";
+    li.innerHTML = `
+      <input type="radio" name="activeProxy" value="${p.id}" ${p.id === activeId ? "checked" : ""} class="active-radio-input"${activatable ? "" : " disabled"}>
+      <div class="active-info">
+        <div class="active-name">${escapeHtml(p.name)}</div>
+        <div class="active-meta">
+          <span>${escapeHtml(srcLabel)}</span>
+          <span>·</span>
+          <span class="card-badge">${escapeHtml(securityBadge(p.config))}</span>
+          <span>${escapeHtml(p.config.address)}:${p.config.port}</span>
+        </div>
+      </div>
+    `;
+    els.activeProxyList.appendChild(li);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[c]);
+}
+
+// Form open/close
+
+function openManualKeyForm(proxyId = null) {
+  editingProxyId = proxyId;
+  els.manualKeyFormTitle.textContent = proxyId ? "Редактировать ключ" : "Новый ключ";
+  els.manualKeyForm.hidden = false;
+  els.subscriptionForm.hidden = true;
+
+  const profile = getActiveProfile();
+  if (!profile) return;
+
+  if (proxyId) {
+    const p = (profile.proxies || []).find((x) => x.id === proxyId);
+    if (p) {
+      profile.proxyConfig = { ...p.config };
+      els.manualKeyName.value = p.name;
+    }
+  } else {
+    profile.proxyConfig = createDefaultProxyConfig();
+    els.manualKeyName.value = "";
+    els.proxyImportUrl.value = "";
+  }
+  renderProxyConfig(profile);
+}
+
+function closeManualKeyForm() {
+  editingProxyId = null;
+  els.manualKeyForm.hidden = true;
+  els.proxyImportUrl.value = "";
+}
+
+function openSubscriptionForm() {
+  els.subscriptionForm.hidden = false;
+  els.manualKeyForm.hidden = true;
+  els.newSubscriptionName.value = "";
+  els.newSubscriptionUrl.value = "";
+  setSubscriptionFormStatus("info", "");
+}
+
+function closeSubscriptionForm() {
+  els.subscriptionForm.hidden = true;
+}
+
+function setSubscriptionFormStatus(kind, message) {
+  if (!els.subscriptionFormStatus) return;
+  if (!message) {
+    els.subscriptionFormStatus.hidden = true;
+    els.subscriptionFormStatus.textContent = "";
+    return;
+  }
+  els.subscriptionFormStatus.hidden = false;
+  els.subscriptionFormStatus.className = `probe-status ${kind}`;
+  els.subscriptionFormStatus.textContent = message;
+}
+
+// CRUD handlers
+
+function saveManualKey() {
+  const profile = getActiveProfile();
+  if (!profile) return;
   const config = normalizeProxyConfig(profile.proxyConfig);
+  if (!config.address || !config.uuid) {
+    setProbeStatus("error", "Не хватает адреса или UUID. Заполни поля или вставь vless:// URI.");
+    return;
+  }
+  const name = els.manualKeyName.value.trim() || config.address;
+  if (editingProxyId) {
+    const existing = profile.proxies.find((p) => p.id === editingProxyId);
+    if (existing) {
+      existing.name = name;
+      existing.config = config;
+    }
+  } else {
+    profile.proxies.push({
+      id: `proxy-${newId()}`,
+      name,
+      source: "manual",
+      config
+    });
+    if (!profile.activeProxyId) {
+      profile.activeProxyId = profile.proxies[profile.proxies.length - 1].id;
+    }
+  }
+  closeManualKeyForm();
+  persistState();
+  renderProxiesPanel(profile);
+}
+
+function deleteProxy(proxyId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  if (!confirm("Удалить этот ключ?")) return;
+  profile.proxies = (profile.proxies || []).filter((p) => p.id !== proxyId);
+  if (profile.activeProxyId === proxyId) {
+    profile.activeProxyId = profile.proxies.length ? profile.proxies[0].id : null;
+  }
+  persistState();
+  renderProxiesPanel(profile);
+}
+
+function setActiveProxy(proxyId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const proxy = (profile.proxies || []).find((p) => p.id === proxyId);
+  if (!proxy) return;
+  if (!isProxyActivatable(proxy.config)) {
+    showToast(
+      "Hysteria2 ещё не интегрирован с sing-box. Парсер работает, выбрать активным пока нельзя.",
+      { variant: "warning", durationMs: 5000 }
+    );
+    renderActiveProxyList(profile); // restore visual selection
+    return;
+  }
+  profile.activeProxyId = proxyId;
+  persistState();
+  renderActiveProxyList(profile);
+}
+
+async function fetchSubscriptionViaBackend(url) {
+  const res = await fetch("/api/routing.cgi?kind=subscription-fetch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url })
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || `fetch failed (${res.status})`);
+  // data.raw is base64 of the HTTP body. Body itself is typically base64 of URIs.
+  const httpBody = atob(data.raw);
+  let text;
+  try {
+    let inner = httpBody.replace(/-/g, "+").replace(/_/g, "/").trim();
+    while (inner.length % 4) inner += "=";
+    text = atob(inner);
+  } catch {
+    text = httpBody;
+  }
+  return parseSubscriptionText(text);
+}
+
+async function saveSubscription() {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const name = els.newSubscriptionName.value.trim();
+  const url = els.newSubscriptionUrl.value.trim();
+  if (!url) {
+    setSubscriptionFormStatus("error", "URL не заполнен");
+    return;
+  }
+  if (!url.toLowerCase().startsWith("https://")) {
+    setSubscriptionFormStatus("error", "URL должен начинаться с https://");
+    return;
+  }
+  setSubscriptionFormStatus("info", "Загружаю…");
+  els.saveSubscriptionBtn.disabled = true;
+  try {
+    const result = await fetchSubscriptionViaBackend(url);
+    if (result.configs.length === 0) {
+      setSubscriptionFormStatus("error", "Подписка не содержит распознанных ключей");
+      return;
+    }
+    const subId = `sub-${newId()}`;
+    const sub = {
+      id: subId,
+      name: name || (new URL(url).host),
+      url,
+      lastFetched: Date.now(),
+      lastError: null
+    };
+    profile.subscriptions = profile.subscriptions || [];
+    profile.subscriptions.push(sub);
+    profile.proxies = profile.proxies || [];
+    for (const cfg of result.configs) {
+      profile.proxies.push({
+        id: `proxy-${newId()}`,
+        name: cfg.name,
+        source: subId,
+        config: cfg
+      });
+    }
+    if (!profile.activeProxyId && profile.proxies.length) {
+      profile.activeProxyId = profile.proxies.find((p) => p.source === subId).id;
+    }
+    closeSubscriptionForm();
+    persistState();
+    renderProxiesPanel(profile);
+    const msg = `Загружено ${result.configs.length} ключ(ей)` + (result.errors.length ? `, ошибок: ${result.errors.length}` : "");
+    setProbeStatus("success", msg);
+  } catch (err) {
+    setSubscriptionFormStatus("error", String(err.message || err).slice(0, 200));
+  } finally {
+    els.saveSubscriptionBtn.disabled = false;
+  }
+}
+
+async function refreshSubscription(subId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const sub = (profile.subscriptions || []).find((s) => s.id === subId);
+  if (!sub) return;
+  if (refreshingSubs.has(subId)) return; // already running
+
+  refreshingSubs.add(subId);
+  renderSubscriptionsList(profile); // show spinner state
+  const toast = showToast(`Обновляю «${sub.name}»…`, { kind: "progress" });
+
+  // Remember if the active proxy was from this sub — if the refresh removes
+  // it we report that in the toast instead of silently falling back.
+  const activeProxyBefore = profile.activeProxyId;
+  const activeFromThisSub = (profile.proxies || []).find(
+    (p) => p.id === activeProxyBefore && p.source === subId
+  );
+  const activeKeyBefore = activeFromThisSub
+    ? activeFromThisSub.config.address + ":" + activeFromThisSub.config.port + "/" + activeFromThisSub.config.uuid
+    : null;
+
+  try {
+    const result = await fetchSubscriptionViaBackend(sub.url);
+    if (result.configs.length === 0) {
+      sub.lastError = "пустая подписка";
+      persistState();
+      renderProxiesPanel(profile);
+      toast.update(`«${sub.name}»: подписка пуста`, "error");
+      return;
+    }
+
+    // Diff by (address:port/uuid) — same key across refreshes means same server.
+    const oldProxies = (profile.proxies || []).filter((p) => p.source === subId);
+    const oldByKey = new Map(oldProxies.map((p) => [p.config.address + ":" + p.config.port + "/" + p.config.uuid, p]));
+    const newProxies = [];
+    const addedNames = [];
+    let kept = 0;
+    for (const cfg of result.configs) {
+      const key = cfg.address + ":" + cfg.port + "/" + cfg.uuid;
+      const existing = oldByKey.get(key);
+      if (existing) {
+        existing.config = cfg;
+        existing.name = cfg.name;
+        newProxies.push(existing);
+        oldByKey.delete(key);
+        kept++;
+      } else {
+        newProxies.push({
+          id: `proxy-${newId()}`,
+          name: cfg.name,
+          source: subId,
+          config: cfg
+        });
+        addedNames.push(cfg.name);
+      }
+    }
+    const removedNames = Array.from(oldByKey.values()).map((p) => p.name);
+    profile.proxies = [
+      ...(profile.proxies || []).filter((p) => p.source !== subId),
+      ...newProxies
+    ];
+
+    // If the active proxy was removed by this refresh, fall back and tell the
+    // user via the toast so the change isn't invisible.
+    let activeLostMessage = "";
+    if (profile.activeProxyId && !profile.proxies.some((p) => p.id === profile.activeProxyId)) {
+      profile.activeProxyId = newProxies[0]?.id || profile.proxies[0]?.id || null;
+      const fallbackName = profile.proxies.find((p) => p.id === profile.activeProxyId)?.name;
+      activeLostMessage = activeKeyBefore && fallbackName
+        ? ` · активный сброшен на «${fallbackName}»`
+        : " · активный сброшен";
+    }
+
+    sub.lastFetched = Date.now();
+    sub.lastError = null;
+    persistState();
+    renderProxiesPanel(profile);
+
+    // Build a compact summary: +N добавлено, ~N без изменений, -N удалено.
+    const parts = [];
+    if (addedNames.length) parts.push(`+${addedNames.length} новых`);
+    if (kept) parts.push(`~${kept} без изменений`);
+    if (removedNames.length) parts.push(`−${removedNames.length} удалён${removedNames.length === 1 ? "" : "о"}`);
+    const summary = parts.length ? parts.join(", ") : "без изменений";
+    toast.update(`«${sub.name}»: ${summary}${activeLostMessage}`, "success");
+  } catch (err) {
+    sub.lastError = String(err.message || err).slice(0, 200);
+    persistState();
+    renderProxiesPanel(profile);
+    toast.update(`«${sub.name}»: ${sub.lastError}`, "error");
+  } finally {
+    refreshingSubs.delete(subId);
+    renderSubscriptionsList(profile);
+  }
+}
+
+function deleteSubscription(subId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const sub = (profile.subscriptions || []).find((s) => s.id === subId);
+  if (!sub) return;
+  if (!confirm(`Удалить подписку «${sub.name}» и все её ${(profile.proxies || []).filter((p) => p.source === subId).length} ключ(ей)?`)) return;
+  profile.subscriptions = profile.subscriptions.filter((s) => s.id !== subId);
+  profile.proxies = (profile.proxies || []).filter((p) => p.source !== subId);
+  if (profile.activeProxyId && !profile.proxies.some((p) => p.id === profile.activeProxyId)) {
+    profile.activeProxyId = profile.proxies.length ? profile.proxies[0].id : null;
+  }
+  persistState();
+  renderProxiesPanel(profile);
+}
+
+// Localhost port where sing-box exposes a mixed (SOCKS5) inbound for xray to
+// forward TCP traffic into when the active proxy is hysteria2. xray treats
+// the relay as a normal SOCKS5 upstream; sing-box does the real tunneling.
+const SINGBOX_XRAY_RELAY_PORT = 61225;
+
+function buildOutboundsDocument(profile) {
+  const config = getActiveProxyConfig(profile);
   const mux = buildMuxObject(profile.muxConfig);
+  const protocol = (config.protocol || "vless").toLowerCase();
+
+  // Hysteria2 is not xray-native. We keep the "vless-reality" tag (routing
+  // rules reference it everywhere) but route the outbound through sing-box
+  // via SOCKS5. sing-box owns the real hysteria2 outbound.
+  if (protocol === "hysteria2") {
+    return {
+      outbounds: [
+        {
+          tag: "vless-reality",
+          protocol: "socks",
+          settings: {
+            servers: [
+              { address: "127.0.0.1", port: SINGBOX_XRAY_RELAY_PORT }
+            ]
+          }
+        },
+        { protocol: "freedom", tag: "direct" }
+      ]
+    };
+  }
+
+  // user block differs by protocol; xray keeps the outbound tag "vless-reality"
+  // for compatibility with existing routing.json rules even when we ship vmess.
+  const userBlock = protocol === "vmess"
+    ? { id: config.uuid, alterId: Number(config.alterId) || 0, security: "auto", level: 0 }
+    : { id: config.uuid, encryption: "none", flow: config.flow || "", level: 0 };
+
   return {
     outbounds: [
       {
         tag: "vless-reality",
-        protocol: "vless",
+        protocol,
         settings: {
           vnext: [
             {
               address: config.address,
               port: Number(config.port),
-              users: [
-                {
-                  id: config.uuid,
-                  encryption: "none",
-                  flow: config.flow || "xtls-rprx-vision",
-                  level: 0
-                }
-              ]
+              users: [userBlock]
             }
           ]
         },
-        streamSettings: {
-          network: "tcp",
-          security: "reality",
-          realitySettings: {
-            publicKey: config.publicKey,
-            fingerprint: config.fingerprint || "random",
-            serverName: config.serverName,
-            shortId: config.shortId,
-            spiderX: "/"
-          }
-        },
+        streamSettings: buildStreamSettings(config),
         mux
       },
       {
@@ -1937,6 +2599,80 @@ function buildOutboundsDocument(profile) {
       }
     ]
   };
+}
+
+// Build the sing-box config that matches the currently selected proxy.
+// - For vless/vmess (xray-native): keeps the existing shape (UDP TPROXY ->
+//   shadowsocks-relay -> xray). xray does the real tunneling.
+// - For hysteria2: adds a mixed inbound on 127.0.0.1:SINGBOX_XRAY_RELAY_PORT
+//   (so xray can SOCKS into us) and a hysteria2 outbound to the server.
+//   All routes terminate at hysteria2.
+function buildSingboxDocument(profile) {
+  const config = getActiveProxyConfig(profile);
+  const protocol = (config.protocol || "vless").toLowerCase();
+
+  const base = {
+    log: { level: "warn", timestamp: true },
+    inbounds: [
+      {
+        type: "tproxy",
+        tag: "xkeen-udp-tproxy",
+        listen: "0.0.0.0",
+        listen_port: 61221,
+        network: "udp"
+      }
+    ],
+    outbounds: [],
+    route: {
+      rules: [{ ip_is_private: true, outbound: "direct" }],
+      final: "proxy"
+    }
+  };
+
+  if (protocol === "hysteria2") {
+    base.inbounds.push({
+      type: "mixed",
+      tag: "xray-relay",
+      listen: "127.0.0.1",
+      listen_port: SINGBOX_XRAY_RELAY_PORT
+    });
+    const hy2 = {
+      type: "hysteria2",
+      tag: "proxy",
+      server: config.address,
+      server_port: Number(config.port),
+      password: config.password || "",
+      tls: {
+        enabled: true,
+        server_name: config.serverName || config.address,
+        insecure: !!config.insecure
+      }
+    };
+    if (Array.isArray(config.alpn) && config.alpn.length) {
+      hy2.tls.alpn = config.alpn.slice();
+    }
+    if (config.obfs) {
+      hy2.obfs = { type: config.obfs, password: config.obfsPassword || "" };
+    }
+    if (config.pinSHA256) {
+      hy2.tls.certificate_pin_sha256 = [config.pinSHA256];
+    }
+    base.outbounds.push(hy2);
+  } else {
+    // Default: relay UDP into xray's shadowsocks listener so it can tunnel
+    // via the active VLESS/VMess outbound (same path that worked for months).
+    base.outbounds.push({
+      type: "shadowsocks",
+      tag: "proxy",
+      server: "127.0.0.1",
+      server_port: 62640,
+      method: "none",
+      password: "none"
+    });
+  }
+
+  base.outbounds.push({ type: "direct", tag: "direct" });
+  return base;
 }
 
 function extractProxyConfig(doc) {
@@ -1965,14 +2701,38 @@ function extractMuxConfig(doc) {
 
 function createDefaultProxyConfig() {
   return {
+    protocol: "vless",
     address: "",
     port: "",
     uuid: "",
     flow: "xtls-rprx-vision",
-    publicKey: "",
+    network: "tcp",
+    security: "reality",
     serverName: "",
+    fingerprint: "random",
+    publicKey: "",
     shortId: "",
-    fingerprint: "random"
+    spiderX: "/",
+    alpn: [],
+    path: "",
+    host: "",
+    alterId: 0,
+    // gRPC-specific
+    serviceName: "",
+    mode: "",       // gRPC: "multi"|"gun"|"guna"  /  XHTTP: "auto"|"packet-up"|"stream-up"|"stream-one"
+    authority: "",  // gRPC :authority pseudo-header
+    // XHTTP-specific. xhttpExtra carries the full provider-supplied JSON
+    // (scMaxEachPostBytes, scMaxConcurrentPosts, scMinPostsIntervalMs,
+    // xPaddingBytes, noGRPCHeader, etc). xPaddingBytes stays as a top-level
+    // shortcut so older keys still work, but the full extra wins when set.
+    xPaddingBytes: "",
+    xhttpExtra: null,
+    // Hysteria2-specific (UDP/QUIC protocol, NOT xray-native)
+    password: "",         // auth secret (vless/vmess use uuid, hy2 uses password)
+    obfs: "",             // "salamander" or empty
+    obfsPassword: "",
+    insecure: false,      // skip TLS cert verify
+    pinSHA256: ""         // pinned cert fingerprint
   };
 }
 
@@ -1990,6 +2750,349 @@ function normalizeProxyConfig(config) {
     ...createDefaultProxyConfig(),
     ...(config || {})
   };
+}
+
+// Parse a single vless:// URI per the standard URL shape
+// vless://UUID@HOST:PORT?param=value&...#friendly-name
+// Returns { ok: true, config } or { ok: false, error }
+function parseVlessUri(uri) {
+  if (typeof uri !== "string") return { ok: false, error: "not a string" };
+  const trimmed = uri.trim();
+  if (!/^vless:\/\//i.test(trimmed)) return { ok: false, error: "not vless://" };
+
+  let body = trimmed.slice("vless://".length);
+  let name = "";
+  const hashIdx = body.indexOf("#");
+  if (hashIdx >= 0) {
+    try { name = decodeURIComponent(body.slice(hashIdx + 1)); }
+    catch { name = body.slice(hashIdx + 1); }
+    body = body.slice(0, hashIdx);
+  }
+
+  let queryStr = "";
+  const queryIdx = body.indexOf("?");
+  if (queryIdx >= 0) {
+    queryStr = body.slice(queryIdx + 1);
+    body = body.slice(0, queryIdx);
+  }
+
+  const atIdx = body.indexOf("@");
+  if (atIdx < 0) return { ok: false, error: "missing @ in vless URI" };
+  const uuid = body.slice(0, atIdx);
+  const hostPort = body.slice(atIdx + 1);
+  if (!uuid || !hostPort) return { ok: false, error: "empty uuid or host" };
+
+  // rightmost colon — handles IPv6 in brackets
+  const colonIdx = hostPort.lastIndexOf(":");
+  if (colonIdx < 0) return { ok: false, error: "missing port" };
+  const host = hostPort.slice(0, colonIdx).replace(/^\[|\]$/g, "");
+  const port = parseInt(hostPort.slice(colonIdx + 1), 10);
+  if (!host || !Number.isFinite(port) || port < 1 || port > 65535) {
+    return { ok: false, error: "invalid host or port" };
+  }
+
+  const params = {};
+  for (const pair of queryStr.split("&")) {
+    if (!pair) continue;
+    const eqIdx = pair.indexOf("=");
+    const key = eqIdx < 0 ? pair : pair.slice(0, eqIdx);
+    const val = eqIdx < 0 ? "" : pair.slice(eqIdx + 1);
+    // application/x-www-form-urlencoded: `+` decodes to a space.
+    // decodeURIComponent keeps `+` literal, so subscription providers that
+    // pack JSON into extra=... (which has spaces) end up with invalid JSON.
+    const decoded = val.replace(/\+/g, " ");
+    try { params[key] = decodeURIComponent(decoded); }
+    catch { params[key] = decoded; }
+  }
+
+  const security = (params.security || "").toLowerCase() || "none";
+  const network = (params.type || "tcp").toLowerCase();
+  const alpn = params.alpn
+    ? params.alpn.split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+
+  return {
+    ok: true,
+    config: {
+      protocol: "vless",
+      name: name || `${host}:${port}`,
+      address: host,
+      port,
+      uuid,
+      flow: params.flow || "",
+      network,
+      security,
+      serverName: params.sni || params.serverName || "",
+      fingerprint: params.fp || "",
+      publicKey: params.pbk || "",
+      shortId: params.sid || "",
+      spiderX: params.spx || "/",
+      alpn,
+      path: params.path || "",
+      host: params.host || "",
+      alterId: 0,
+      // gRPC: prefer explicit serviceName=, fall back to path= which some
+      // providers reuse for the gRPC service name.
+      serviceName: params.serviceName || params.path || "",
+      mode: params.mode || "",
+      authority: params.authority || "",
+      // XHTTP padding shortcut. Providers expose either
+      //   1) `xPaddingBytes=100-1000` directly, or
+      //   2) `extra={"xPaddingBytes":"100-1000",...}` JSON-encoded.
+      xPaddingBytes: params.xPaddingBytes || (() => {
+        if (!params.extra) return "";
+        try { return JSON.parse(params.extra).xPaddingBytes || ""; }
+        catch { return ""; }
+      })(),
+      // Full XHTTP extra blob — pass-through so all scMax* / noGRPCHeader /
+      // future fields reach xray verbatim. Server-side configs are picky:
+      // missing scMaxEachPostBytes etc. silently breaks stream-up handshake.
+      xhttpExtra: (() => {
+        if (!params.extra) return null;
+        try { return JSON.parse(params.extra); }
+        catch { return null; }
+      })()
+    }
+  };
+}
+
+// Parse vmess:// — payload is base64-encoded JSON
+function parseVmessUri(uri) {
+  if (typeof uri !== "string") return { ok: false, error: "not a string" };
+  const trimmed = uri.trim();
+  if (!/^vmess:\/\//i.test(trimmed)) return { ok: false, error: "not vmess://" };
+
+  const payload = trimmed.slice("vmess://".length);
+  let json;
+  try {
+    let b64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const decoded = atob(b64);
+    json = JSON.parse(decoded);
+  } catch (err) {
+    return { ok: false, error: `vmess decode failed: ${err.message}` };
+  }
+
+  const port = parseInt(json.port, 10);
+  if (!json.add || !Number.isFinite(port)) {
+    return { ok: false, error: "vmess missing add or port" };
+  }
+
+  // vmess "tls" field: "tls" | "reality" | "" | "none"
+  const tlsRaw = String(json.tls || "").toLowerCase();
+  const security = tlsRaw === "tls" ? "tls" : tlsRaw === "reality" ? "reality" : "none";
+  const network = String(json.net || "tcp").toLowerCase();
+  const alpn = json.alpn
+    ? String(json.alpn).split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+
+  return {
+    ok: true,
+    config: {
+      protocol: "vmess",
+      name: json.ps || `${json.add}:${port}`,
+      address: json.add,
+      port,
+      uuid: json.id || "",
+      flow: "",
+      network,
+      security,
+      serverName: json.sni || "",
+      fingerprint: json.fp || "",
+      publicKey: "",
+      shortId: "",
+      spiderX: "/",
+      alpn,
+      path: json.path || "",
+      host: json.host || "",
+      alterId: parseInt(json.aid, 10) || 0,
+      // gRPC: vmess legacy reuses `path` as the gRPC service name.
+      // `type` carries the mode for grpc (multi/gun).
+      serviceName: network === "grpc" ? (json.path || "") : "",
+      mode: network === "grpc" ? (json.type || "") : "",
+      authority: ""
+    }
+  };
+}
+
+// Parse a hysteria2:// or hy2:// URI.
+// Format: hysteria2://password@host:port?sni=...&obfs=salamander&obfs-password=...
+//                                          &insecure=0|1&pinSHA256=...&alpn=h3#name
+// Hysteria2 is UDP/QUIC, not xray-native — applying it requires sing-box.
+// Phase A only parses + displays; activation is gated separately.
+function parseHysteria2Uri(uri) {
+  if (typeof uri !== "string") return { ok: false, error: "not a string" };
+  const trimmed = uri.trim();
+  if (!/^(hysteria2|hy2):\/\//i.test(trimmed)) return { ok: false, error: "not hysteria2://" };
+
+  let body = trimmed.replace(/^(hysteria2|hy2):\/\//i, "");
+  let name = "";
+  const hashIdx = body.indexOf("#");
+  if (hashIdx >= 0) {
+    try { name = decodeURIComponent(body.slice(hashIdx + 1)); }
+    catch { name = body.slice(hashIdx + 1); }
+    body = body.slice(0, hashIdx);
+  }
+
+  let queryStr = "";
+  const queryIdx = body.indexOf("?");
+  if (queryIdx >= 0) {
+    queryStr = body.slice(queryIdx + 1);
+    body = body.slice(0, queryIdx);
+  }
+
+  const atIdx = body.indexOf("@");
+  if (atIdx < 0) return { ok: false, error: "missing @ in hysteria2 URI" };
+  let password = body.slice(0, atIdx);
+  try { password = decodeURIComponent(password); } catch { /* keep raw */ }
+  const hostPort = body.slice(atIdx + 1);
+  if (!password || !hostPort) return { ok: false, error: "empty password or host" };
+
+  const colonIdx = hostPort.lastIndexOf(":");
+  if (colonIdx < 0) return { ok: false, error: "missing port" };
+  const host = hostPort.slice(0, colonIdx).replace(/^\[|\]$/g, "");
+  const port = parseInt(hostPort.slice(colonIdx + 1), 10);
+  if (!host || !Number.isFinite(port) || port < 1 || port > 65535) {
+    return { ok: false, error: "invalid host or port" };
+  }
+
+  const params = {};
+  for (const pair of queryStr.split("&")) {
+    if (!pair) continue;
+    const eqIdx = pair.indexOf("=");
+    const key = eqIdx < 0 ? pair : pair.slice(0, eqIdx);
+    const val = eqIdx < 0 ? "" : pair.slice(eqIdx + 1);
+    try { params[key] = decodeURIComponent(val); }
+    catch { params[key] = val; }
+  }
+
+  const alpn = params.alpn
+    ? params.alpn.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  return {
+    ok: true,
+    config: {
+      protocol: "hysteria2",
+      name: name || `${host}:${port}`,
+      address: host,
+      port,
+      uuid: "",                   // hy2 uses password, not uuid
+      password,
+      flow: "",
+      network: "udp",             // QUIC over UDP
+      security: "tls",            // always TLS
+      serverName: params.sni || params.serverName || host,
+      fingerprint: params.fp || "",
+      publicKey: "",
+      shortId: "",
+      spiderX: "/",
+      alpn: alpn.length ? alpn : ["h3"],
+      path: "",
+      host: "",
+      alterId: 0,
+      serviceName: "",
+      mode: "",
+      authority: "",
+      xPaddingBytes: "",
+      // Hysteria2-specific
+      obfs: params.obfs || "",
+      obfsPassword: params["obfs-password"] || params.obfsPassword || "",
+      insecure: params.insecure === "1" || params.insecure === "true",
+      pinSHA256: params.pinSHA256 || params["pin-sha256"] || ""
+    }
+  };
+}
+
+// Parse a subscription body (already base64-decoded by caller).
+// Each non-empty line is a URI; unknown schemes are skipped silently.
+function parseSubscriptionText(rawText) {
+  const lines = String(rawText || "").split(/\r?\n/);
+  const configs = [];
+  const errors = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("#")) continue;
+    let result = null;
+    if (/^vless:\/\//i.test(trimmed)) result = parseVlessUri(trimmed);
+    else if (/^vmess:\/\//i.test(trimmed)) result = parseVmessUri(trimmed);
+    else if (/^(hysteria2|hy2):\/\//i.test(trimmed)) result = parseHysteria2Uri(trimmed);
+    else continue;
+    if (result.ok) configs.push(result.config);
+    else errors.push({ line: trimmed.slice(0, 80), error: result.error });
+  }
+  return { configs, errors };
+}
+
+// Build xray outbound `streamSettings` from a normalized proxy config.
+// Branches on `security` (reality | tls | none) and `network` (tcp | ws).
+// Returns the streamSettings object for the outbound.
+function buildStreamSettings(cfg) {
+  const network = (cfg.network || "tcp").toLowerCase();
+  const security = (cfg.security || "none").toLowerCase();
+
+  const ss = {
+    network,
+    security: security === "none" ? "none" : security
+  };
+
+  if (security === "reality") {
+    ss.realitySettings = {
+      publicKey: cfg.publicKey || "",
+      fingerprint: cfg.fingerprint || "random",
+      serverName: cfg.serverName || "",
+      shortId: cfg.shortId || "",
+      spiderX: cfg.spiderX || "/"
+    };
+  } else if (security === "tls") {
+    ss.tlsSettings = {
+      serverName: cfg.serverName || cfg.address || "",
+      fingerprint: cfg.fingerprint || "chrome",
+      allowInsecure: false
+    };
+    if (Array.isArray(cfg.alpn) && cfg.alpn.length) {
+      ss.tlsSettings.alpn = cfg.alpn.slice();
+    }
+  }
+
+  if (network === "ws") {
+    ss.wsSettings = {
+      path: cfg.path || "/",
+      headers: cfg.host ? { Host: cfg.host } : {}
+    };
+  } else if (network === "grpc") {
+    ss.grpcSettings = {
+      // Prefer explicit serviceName; fall back to path (vmess-legacy).
+      serviceName: cfg.serviceName || cfg.path || "",
+      // multi/gun modes — multiMode flips to true for "multi", everything
+      // else (default "gun") stays false. xray will use single-stream when
+      // multiMode is false.
+      multiMode: String(cfg.mode || "").toLowerCase() === "multi"
+    };
+    if (cfg.authority) ss.grpcSettings.authority = cfg.authority;
+  } else if (network === "xhttp") {
+    // XHTTP — xray's modern transport: HTTP/2 or HTTP/3 frames that look
+    // like normal browser traffic. Best paired with Reality for DPI evasion.
+    // mode determines upload framing: "auto" lets xray pick, "stream-one"
+    // is the stealthiest single-stream variant.
+    const mode = (cfg.mode || "auto").toLowerCase();
+    ss.xhttpSettings = {
+      mode,
+      path: cfg.path || "/",
+      host: cfg.host || ""
+    };
+    // `extra` carries the stream-up tuning that servers really care about
+    // (scMaxEachPostBytes, scMaxConcurrentPosts, scMinPostsIntervalMs,
+    // xPaddingBytes, noGRPCHeader). Prefer the full provider-supplied blob;
+    // fall back to the xPaddingBytes shortcut so older keys still work.
+    if (cfg.xhttpExtra && typeof cfg.xhttpExtra === "object") {
+      ss.xhttpSettings.extra = cfg.xhttpExtra;
+    } else if (cfg.xPaddingBytes) {
+      ss.xhttpSettings.extra = { xPaddingBytes: cfg.xPaddingBytes };
+    }
+  }
+
+  return ss;
 }
 
 function normalizeMuxConfig(config) {
@@ -2100,12 +3203,42 @@ function createEmptyProfile(name = T.defaultProfileName) {
     fallbackOutbound: "direct",
     proxyConfig: createDefaultProxyConfig(),
     muxConfig: createDefaultMuxConfig(),
+    proxies: [],
+    subscriptions: [],
+    activeProxyId: null,
     groups: [createEmptyGroup()]
   };
 }
 
 function cloneProfile(profile) {
   return JSON.parse(JSON.stringify(profile));
+}
+
+function normalizeProxyEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const config = normalizeProxyConfig(entry.config);
+  // vless/vmess authenticate by uuid; hysteria2 by password. Accept either.
+  const hasAuth = config.uuid || config.password;
+  if (!config.address || !hasAuth) return null;
+  return {
+    id: entry.id || `proxy-${newId()}`,
+    name: String(entry.name || config.address || "Unnamed"),
+    source: entry.source || "manual",
+    config
+  };
+}
+
+function normalizeSubscriptionEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const url = String(entry.url || "").trim();
+  if (!url) return null;
+  return {
+    id: entry.id || `sub-${newId()}`,
+    name: String(entry.name || url.replace(/^https?:\/\//, "").slice(0, 32)),
+    url,
+    lastFetched: Number.isFinite(entry.lastFetched) ? entry.lastFetched : null,
+    lastError: entry.lastError ? String(entry.lastError).slice(0, 200) : null
+  };
 }
 
 function normalizeProfile(profile) {
@@ -2119,15 +3252,63 @@ function normalizeProfile(profile) {
     cidrs: uniq(Array.isArray(group.cidrs) ? group.cidrs : [])
   }));
 
+  // New multi-key fields with shape normalization
+  const proxies = (Array.isArray(profile.proxies) ? profile.proxies : [])
+    .map(normalizeProxyEntry)
+    .filter(Boolean);
+  const subscriptions = (Array.isArray(profile.subscriptions) ? profile.subscriptions : [])
+    .map(normalizeSubscriptionEntry)
+    .filter(Boolean);
+
+  const legacy = normalizeProxyConfig(profile.proxyConfig);
+
+  // Migration: if proxies[] is empty but legacy proxyConfig has real fields,
+  // create proxies[0] from legacy. Idempotent — running again no-ops since
+  // the migrated proxy is already present.
+  if (proxies.length === 0 && legacy.address && legacy.uuid) {
+    proxies.push({
+      id: `proxy-${newId()}`,
+      name: legacy.address || "Legacy",
+      source: "manual",
+      config: legacy
+    });
+  }
+
+  // Validate activeProxyId: must reference an existing proxy.
+  let activeProxyId = profile.activeProxyId || null;
+  if (activeProxyId && !proxies.some((p) => p.id === activeProxyId)) {
+    activeProxyId = null;
+  }
+  if (!activeProxyId && proxies.length) {
+    activeProxyId = proxies[0].id;
+  }
+
   return {
     id: profile.id || newId(),
     name: profile.name || T.defaultProfileName,
     domainStrategy: profile.domainStrategy || "IPIfNonMatch",
     fallbackOutbound: profile.fallbackOutbound || "direct",
-    proxyConfig: normalizeProxyConfig(profile.proxyConfig),
+    proxyConfig: legacy,
     muxConfig: normalizeMuxConfig(profile.muxConfig),
+    proxies,
+    subscriptions,
+    activeProxyId,
     groups: groups.length ? groups : [createEmptyGroup()]
   };
+}
+
+// Return the proxy config that should drive the xray outbound. Prefers the
+// active entry in profile.proxies[]; falls back to legacy profile.proxyConfig
+// when nothing is selected (e.g. fresh install before user picks a key).
+function getActiveProxyConfig(profile) {
+  if (!profile) return createDefaultProxyConfig();
+  const proxies = Array.isArray(profile.proxies) ? profile.proxies : [];
+  if (proxies.length && profile.activeProxyId) {
+    const active = proxies.find((p) => p.id === profile.activeProxyId);
+    if (active && active.config) return normalizeProxyConfig(active.config);
+  }
+  if (proxies.length && proxies[0].config) return normalizeProxyConfig(proxies[0].config);
+  return normalizeProxyConfig(profile.proxyConfig);
 }
 
 function getActiveProfile() {

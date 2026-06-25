@@ -4,38 +4,65 @@
   <img src="docs/screenshots/ui-overview.png" alt="AntiGoblin UI" width="900">
 </p>
 
-`AntiGoblin` — это панель управления для `Keenetic + Entware + XKeen/xray + sing-box`, которая живет на самом роутере.
+`AntiGoblin` — это панель управления для `Keenetic + Entware + XKeen/xray + sing-box`, которая живёт на самом роутере.
 
 После установки рабочий сценарий пользователя:
 
 1. Открыть UI на `http://<router-ip>:8899/`.
-2. Заполнить `VLESS Reality`.
-3. Создать routing-группы.
-4. Нажать `Сохранить и применить`.
-5. В Keenetic web UI назначить нужные устройства в политику `xkeen` в разделе «Приоритеты подключений».
+2. Добавить **ключ** — вручную через `vless://` / `vmess://` / `hysteria2://` URI, или подключить **подписку** по HTTPS-URL.
+3. Выбрать активный ключ (radio-кнопка в блоке «Активный ключ»).
+4. Создать routing-группы.
+5. Нажать `Сохранить и применить`.
+6. В Keenetic web UI назначить нужные устройства в политику `xkeen` в разделе «Приоритеты подключений».
 
 После этого роутер использует:
 
 - политику Keenetic `xkeen` для выбора устройств;
 - `iptables` для перехвата `TCP` и `UDP` устройств из `xkeen`;
-- `xray` для маршрутизации `TCP` в `vless-reality` или `direct`;
-- `sing-box` для маршрутизации `UDP` в VLESS Reality (через локальный SS-relay в `xray`).
+- `xray` для маршрутизации `TCP` через активный ключ или `direct`;
+- `sing-box` для маршрутизации `UDP`: либо через xray SS-relay (для xray-протоколов), либо напрямую через свой outbound (для `hysteria2`).
 
 Текущая живая модель runtime:
 
 - любая UI-группа с outbound `vless-reality` гонит и `TCP`, и `UDP` через VPN — отдельных флагов для UDP нет;
 - группы с outbound `bypass` обходят `xray` полностью через `RETURN`;
 - группы с outbound `direct` входят в `xray`, но уходят напрямую без VPN;
-- общий `UDP` устройств вне VPN-групп идет напрямую;
+- общий `UDP` устройств вне VPN-групп идёт напрямую;
 - локалка и discovery обходят `xray` через `RETURN`.
+
+## Поддерживаемые протоколы и транспорты
+
+В одном профиле можно держать **несколько ключей** (manual или из подписки) и переключаться между ними одной кнопкой. Все парсятся универсально:
+
+| Протокол | Транспорты | Безопасность | Тоннелирует через |
+|----------|-----------|--------------|-------------------|
+| **VLESS** | `tcp`, `ws`, `grpc`, `xhttp` | `reality`, `tls`, `none` | xray |
+| **VMess** | `tcp`, `ws`, `grpc` | `tls`, `reality`, `none` | xray |
+| **Hysteria2** (`hy2://` тоже) | `quic` (UDP) | `tls`, obfs (Salamander), pinSHA256 | sing-box, xray ходит SOCKS5'ом в sing-box на `127.0.0.1:61225` |
+
+Особенности:
+
+- **XHTTP** разбирает все `mode`-варианты (`auto`/`packet-up`/`stream-up`/`stream-one`) и весь `extra={...}` блок (`scMaxEachPostBytes`, `scMaxConcurrentPosts`, `scMinPostsIntervalMs`, `xPaddingBytes`, `noGRPCHeader` и т. п.). Это критично — без правильно прокинутого `extra` стрим-up handshake не складывается и сервер скатывается в Reality fallback HTML.
+- **gRPC** покрывает `serviceName`, `mode` (`multi`/`gun`), `authority` и `alpn`.
+- **Hysteria2** работает через bridge-схему: xray-outbound `vless-reality` подменяется на SOCKS5 в локальный mixed-inbound sing-box (`127.0.0.1:61225`), а sing-box уже держит реальный hysteria2 outbound. UDP-TPROXY на 61221 в sing-box тоже терминируется в hysteria2 напрямую.
+
+### Подписки
+
+Подписка — это HTTPS-URL, который отдаёт base64-кодированный список URI (по одному ключу на строку). Поддерживается стандартный формат `subconverter`/`v2sub`. AntiGoblin:
+
+- по HTTPS-only, с лимитом ответа 256KB и таймаутом 10 секунд;
+- хранит URL подписки в `xkeen-ui-state.json` (root-only на роутере);
+- обновляется по кнопке ↻ в UI (auto-refresh пока не реализован);
+- при refresh добавляет новые ключи, помечает удалённые, оставляет неизменные на месте; активный ключ сохраняется, если он всё ещё в подписке.
 
 ## Оглавление
 
+- [Поддерживаемые протоколы и транспорты](#поддерживаемые-протоколы-и-транспорты)
 - [Подготовка Keenetic (один раз руками)](#подготовка-keenetic-один-раз-руками)
   - [Совместимые модели](#совместимые-модели)
   - [Шаг 1. Установить компоненты KeeneticOS](#шаг-1-установить-компоненты-keeneticos)
   - [Шаг 2. Подготовить флешку с Entware на PC](#шаг-2-подготовить-флешку-с-entware-на-pc)
-  - [Шаг 3. Подключить Entware к OPKG-менеджеру и перезагрузить](#шаг-3-подключить-entware-к-opkg-менеджеру-и-перезагрузить)
+  - [Шаг 3. Подключить Entware к OPKG-менеджеру и перезагрузить](#шаг-3-подключить-entware-к-опкг-менеджеру-и-перезагрузить)
 - [Установка одной командой](#установка-одной-командой)
   - [Вариант без SSH: через Keenetic Web CLI](#вариант-без-ssh-через-keenetic-web-cli)
   - [Вариант через SSH](#вариант-через-ssh)
@@ -211,12 +238,15 @@ ANTIGOBLIN_FORCE=1 sh install.sh
 
 В UI:
 
-- заполнить `VLESS Reality` (адрес сервера, порт, UUID, public key, short ID, SNI);
-- создать или включить routing-группы. У каждой группы выбрать outbound:
-  - `vless-reality` — TCP и UDP этой группы идут через VPN;
-  - `direct` — трафик группы входит в `xray` и выходит без VPN;
-  - `bypass` — трафик группы обходит `xray` полностью (через `RETURN`).
-- нажать `Сохранить и применить`.
+1. **Добавить ключ или подписку** в блоке «Конфиг прокси»:
+   - **+ Ручной ключ** — вставить `vless://`, `vmess://` или `hysteria2://` URI. Парсер сам разложит на поля.
+   - **+ Подписка** — добавить HTTPS-URL подписки. Backend стянет, распарсит, добавит каждый ключ как отдельную карточку.
+2. **Выбрать активный ключ** — radio-кнопка в «Активный ключ». Через него пойдёт весь VPN-трафик.
+3. **Создать или включить routing-группы.** У каждой группы выбрать outbound:
+   - `vless-reality` — TCP и UDP этой группы идут через активный ключ (тег `vless-reality` остаётся одинаковым независимо от протокола ключа — это просто маршрут «через VPN»);
+   - `direct` — трафик группы входит в `xray` и выходит без VPN;
+   - `bypass` — трафик группы обходит `xray` полностью (через `RETURN`).
+4. **Нажать `Сохранить и применить`.** Backend пересоберёт `04_outbounds.json` (xray) и при необходимости `sing-box-xkeen.json`, перезапустит оба процесса.
 
 В web UI Keenetic в разделе «Приоритеты подключений» — назначить нужные устройства в политику `xkeen`. Только устройства из этой политики попадают под управление AntiGoblin; остальные политики (например, личная `no_vpn`) не трогаются.
 
@@ -246,12 +276,15 @@ ANTIGOBLIN_FORCE=1 sh install.sh
 
 Единственный источник истины для UI:
 
-- `/opt/share/xkeen-manager/xkeen-ui-state.json`
+- `/opt/share/xkeen-manager/xkeen-ui-state.json` — профили, список подписок, ключей, активный ключ, mux-настройки, routing-группы.
 
-Из него backend генерирует:
+Из него UI/backend генерируют (и каждый Save+Apply перезаписывает):
 
-- `/opt/etc/xray/configs/04_outbounds.json`
-- `/opt/etc/xray/configs/05_routing.json`
+- `/opt/etc/xray/configs/04_outbounds.json` — outbound активного ключа. Для `hysteria2` это SOCKS5 в локальный sing-box.
+- `/opt/etc/xray/configs/05_routing.json` — правила маршрутизации UI-групп.
+- `/opt/etc/sing-box/xkeen.json` — для xray-протоколов это TPROXY+SS-relay; для `hysteria2` это TPROXY+mixed-inbound+hysteria2-outbound.
+
+Перед каждой записью бэкенд сохраняет копию с суффиксом `.bak-ui-<timestamp>` — откатить руками можно `cp`-ом.
 
 ## Runtime-файлы на роутере
 
@@ -276,7 +309,9 @@ UDP-маршрутизация привязана к outbound группы ав�
 wget -O - https://raw.githubusercontent.com/MaksimSamarin/AntiGoblin/main/install.sh | sh
 ```
 
-UI state и существующие `xray`/`sing-box` конфиги не пересеваются. Чтобы откатить sample-конфиги к версии из репозитория, добавь `ANTIGOBLIN_FORCE=1`.
+UI state и существующие `xray`/`sing-box` конфиги **не пересеваются**: новые версии backend/UI просто заменяются. При первом запуске нового UI старая схема state (`proxyConfig` одной штукой) автоматически мигрирует в новую (`proxies[]` + `subscriptions[]` + `activeProxyId`) при чтении — пользовательский ключ становится первой записью в `proxies[]` и сразу активным. Откатиться легко: бэкап state делается каждый Save+Apply (`.bak-ui-<timestamp>`).
+
+Чтобы пересеять sample-конфиги к версии из репозитория, добавь `ANTIGOBLIN_FORCE=1`.
 
 ## Удаление
 
@@ -335,8 +370,8 @@ ANTIGOBLIN_UI_PORT=8899
 
 | Компонент | Роль в `AntiGoblin` | Лицензия |
 |-----------|----------------------|----------|
-| [XTLS/Xray-core](https://github.com/XTLS/Xray-core) | TCP transparent proxy на `:61219`, VLESS Reality outbound к VPN-серверу, локальный Shadowsocks-relay для UDP. | MPL-2.0 |
-| [SagerNet/sing-box](https://github.com/SagerNet/sing-box) | TPROXY UDP inbound на `:61221` для voice/RTC-трафика, проксирует UDP в локальный xray relay. | GPL-3.0 |
+| [XTLS/Xray-core](https://github.com/XTLS/Xray-core) | TCP transparent proxy на `:61219`. Outbound зависит от активного ключа: VLESS/VMess через любой из `tcp`/`ws`/`grpc`/`xhttp` поверх `reality`/`tls`/`none`; для `hysteria2` xray ходит SOCKS5'ом в локальный sing-box. Локальный Shadowsocks-relay для xray-протокольных UDP. | MPL-2.0 |
+| [SagerNet/sing-box](https://github.com/SagerNet/sing-box) | TPROXY UDP inbound на `:61221` для voice/RTC-трафика. Для xray-протокольных ключей релит UDP в xray на `:62640`; для `hysteria2` хостит mixed-inbound на `127.0.0.1:61225` для TCP-моста от xray и сам терминирует hysteria2-outbound. | GPL-3.0 |
 | [Entware](https://github.com/Entware/Entware) | Linux-окружение `/opt` на роутере: `opkg`, базовые утилиты, init-инфраструктура. | GPL-2.0 |
 | [uhttpd_kn](https://github.com/Entware/Entware/tree/master/sources/uhttpd_kn) | HTTP-сервер, на котором живёт UI на порту `:8899`. | ISC |
 | [iptables](https://www.netfilter.org/projects/iptables/) + [ipset](https://ipset.netfilter.org/) | Mark-based selective routing для устройств политики `xkeen`. | GPL-2.0 |

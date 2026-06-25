@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AntiGoblin</title>
-  <link rel="stylesheet" href="./styles.css?v=64">
+  <link rel="stylesheet" href="./styles.css?v=77">
 </head>
 <body>
     <div id="authOverlay" class="auth-overlay" hidden>
@@ -120,63 +120,91 @@
           <div class="vless-panel">
             <div class="panel-header mini-header">
               <div>
-                <p class="panel-kicker">VLESS Reality</p>
-                <h3 id="proxyTitle">&#1050;&#1086;&#1085;&#1092;&#1080;&#1075; &#1087;&#1088;&#1086;&#1082;&#1089;&#1080;</h3>
+                <p class="panel-kicker">VLESS / VMess</p>
+                <h3 id="proxyTitle">Подписки и ключи</h3>
               </div>
               <div class="hero-actions compact-actions proxy-actions">
-                <button id="importProxyBtn" type="button">&#1048;&#1084;&#1087;&#1086;&#1088;&#1090; vless://</button>
-                <button id="probeProxyBtn" type="button">&#1055;&#1088;&#1086;&#1074;&#1077;&#1088;&#1080;&#1090;&#1100;</button>
+                <button id="addManualKeyBtn" type="button">+ Ручной ключ</button>
+                <button id="addSubscriptionBtn" type="button">+ Подписка</button>
+                <button id="probeProxyBtn" type="button">Проверить активный</button>
               </div>
             </div>
 
-            <label>
-              <span id="proxyUrlLabel">VLESS URL</span>
-              <textarea id="proxyImportUrl" rows="3" placeholder="vless://uuid@host:port?type=tcp&security=reality&pbk=...&fp=random&sni=...&sid=...&spx=%2F&flow=xtls-rprx-vision#name"></textarea>
-            </label>
-            <div id="proxyProbeStatus" class="probe-status" hidden></div>
+            <section class="key-block">
+              <h4 class="key-block-title">Подписки</h4>
+              <ul id="subscriptionsList" class="cards-list" aria-live="polite"></ul>
+            </section>
 
-            <div class="grid two">
+            <section class="key-block">
+              <h4 class="key-block-title">Ручные ключи</h4>
+              <ul id="manualKeysList" class="cards-list" aria-live="polite"></ul>
+            </section>
+
+            <section class="key-block">
+              <h4 class="key-block-title">Активный ключ</h4>
+              <ul id="activeProxyList" class="active-proxy-list" aria-live="polite"></ul>
+              <div id="proxyProbeStatus" class="probe-status" hidden></div>
+            </section>
+
+            <div id="manualKeyForm" class="inline-form" hidden>
+              <h4 class="key-block-title" id="manualKeyFormTitle">Новый ключ</h4>
               <label>
-                <span id="proxyAddressLabel">&#1057;&#1077;&#1088;&#1074;&#1077;&#1088;</span>
-                <input id="proxyAddress" type="text" placeholder="vpn.example.com">
+                <span id="proxyUrlLabel">vless:// или vmess:// URI</span>
+                <textarea id="proxyImportUrl" rows="3" placeholder="vless://uuid@host:port?type=tcp&security=reality&pbk=...&fp=random&sni=...&sid=...&spx=%2F&flow=xtls-rprx-vision#name"></textarea>
               </label>
+              <div class="form-row">
+                <button id="importProxyBtn" type="button">Распарсить URI в поля</button>
+              </div>
               <label>
-                <span id="proxyPortLabel">&#1055;&#1086;&#1088;&#1090;</span>
-                <input id="proxyPort" type="number" min="1" max="65535" placeholder="443">
+                <span>Имя ключа</span>
+                <input id="manualKeyName" type="text" placeholder="My VPN">
               </label>
+              <details class="advanced-fields">
+                <summary>Расширенные поля (заполняются автоматически)</summary>
+                <div class="grid two">
+                  <label>
+                    <span id="proxyAddressLabel">Сервер</span>
+                    <input id="proxyAddress" type="text" placeholder="vpn.example.com">
+                  </label>
+                  <label>
+                    <span id="proxyPortLabel">Порт</span>
+                    <input id="proxyPort" type="number" min="1" max="65535" placeholder="443">
+                  </label>
+                </div>
+                <div class="grid two">
+                  <label><span>UUID</span><input id="proxyUuid" type="text" placeholder="00000000-0000-0000-0000-000000000000"></label>
+                  <label><span>Flow</span><input id="proxyFlow" type="text" placeholder="xtls-rprx-vision"></label>
+                </div>
+                <div class="grid two">
+                  <label><span>Public key</span><input id="proxyPublicKey" type="text" placeholder="YOUR_REALITY_PUBLIC_KEY"></label>
+                  <label><span>Server name (SNI)</span><input id="proxyServerName" type="text" placeholder="www.cloudflare.com"></label>
+                </div>
+                <div class="grid two">
+                  <label><span>Short ID</span><input id="proxyShortId" type="text" placeholder="0123456789abcdef"></label>
+                  <label><span>Fingerprint</span><input id="proxyFingerprint" type="text" placeholder="random"></label>
+                </div>
+              </details>
+              <div class="form-row form-actions">
+                <button id="saveManualKeyBtn" type="button" class="primary">Сохранить</button>
+                <button id="cancelManualKeyBtn" type="button">Отмена</button>
+              </div>
             </div>
 
-            <div class="grid two">
+            <div id="subscriptionForm" class="inline-form" hidden>
+              <h4 class="key-block-title">Новая подписка</h4>
               <label>
-                <span>UUID</span>
-                <input id="proxyUuid" type="text" placeholder="00000000-0000-0000-0000-000000000000">
+                <span>Имя</span>
+                <input id="newSubscriptionName" type="text" placeholder="My subscription">
               </label>
               <label>
-                <span>Flow</span>
-                <input id="proxyFlow" type="text" placeholder="xtls-rprx-vision">
+                <span>URL (только https://)</span>
+                <input id="newSubscriptionUrl" type="url" placeholder="https://example.com/sub/token">
               </label>
-            </div>
-
-            <div class="grid two">
-              <label>
-                <span>Public key</span>
-                <input id="proxyPublicKey" type="text" placeholder="YOUR_REALITY_PUBLIC_KEY">
-              </label>
-              <label>
-                <span>Server name</span>
-                <input id="proxyServerName" type="text" placeholder="www.cloudflare.com">
-              </label>
-            </div>
-
-            <div class="grid two">
-              <label>
-                <span>Short ID</span>
-                <input id="proxyShortId" type="text" placeholder="0123456789abcdef">
-              </label>
-              <label>
-                <span>Fingerprint</span>
-                <input id="proxyFingerprint" type="text" placeholder="random">
-              </label>
+              <div id="subscriptionFormStatus" class="probe-status" hidden></div>
+              <div class="form-row form-actions">
+                <button id="saveSubscriptionBtn" type="button" class="primary">Загрузить и сохранить</button>
+                <button id="cancelSubscriptionBtn" type="button">Отмена</button>
+              </div>
             </div>
 
             <div class="mux-settings">
@@ -288,6 +316,6 @@
     </main>
   </div>
 
-  <script charset="utf-8" src="./app.js?v=64"></script>
+  <script charset="utf-8" src="./app.js?v=77"></script>
 </body>
 </html>

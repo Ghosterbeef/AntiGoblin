@@ -134,6 +134,12 @@ get_kind() {
     kind=stack-info|*'&kind=stack-info'|kind=stack-info'&'*)
       printf 'stack-info'
       ;;
+    kind=subscription-fetch|*'&kind=subscription-fetch'|kind=subscription-fetch'&'*)
+      printf 'subscription-fetch'
+      ;;
+    kind=singbox|*'&kind=singbox'|kind=singbox'&'*)
+      printf 'singbox'
+      ;;
     *)
       printf 'routing'
       ;;
@@ -558,6 +564,94 @@ valid_probe_port() {
   [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
+# Fetch a subscription URL and return its body base64-encoded for JSON-safe
+# transport. The endpoint is intentionally dumb: it does NOT decode or parse
+# the subscription content; the client decodes base64 and parses URIs.
+# This keeps the server simple and avoids assumptions about format.
+#
+# Constraints:
+#   - URL must use https:// (no plain http to prevent token leaks)
+#   - URL length capped to avoid pathological inputs
+#   - Response capped at 256KB and 10s wall time (DoS mitigation)
+#   - Prefers curl; falls back to wget only if it has HTTPS support
+fetch_subscription() {
+  URL="$(json_field url)"
+
+  if [ -z "$URL" ]; then
+    json_err "missing url field"
+    rm -f "$TMP_BODY"
+    exit 0
+  fi
+
+  case "$URL" in
+    https://*) ;;
+    *)
+      json_err "url must use https://"
+      rm -f "$TMP_BODY"
+      exit 0
+      ;;
+  esac
+
+  URL_LEN="${#URL}"
+  if [ "$URL_LEN" -gt 2048 ]; then
+    json_err "url too long ($URL_LEN > 2048)"
+    rm -f "$TMP_BODY"
+    exit 0
+  fi
+
+  FETCHER=""
+  if [ -x /opt/bin/curl ]; then
+    FETCHER="curl"
+  elif [ -x /opt/bin/wget ] && /opt/bin/wget --version 2>&1 | grep -qiE '\+https|gnutls|openssl|ssl/tls'; then
+    FETCHER="wget"
+  else
+    json_err "no https-capable fetcher (install curl: opkg install curl)"
+    rm -f "$TMP_BODY"
+    exit 0
+  fi
+
+  TMP_FETCH="/tmp/xkeen-sub-fetch.raw"
+  TMP_FETCH_ERR="/tmp/xkeen-sub-fetch.err"
+  rm -f "$TMP_FETCH" "$TMP_FETCH_ERR"
+
+  if [ "$FETCHER" = "curl" ]; then
+    /opt/bin/curl -fsSL \
+      --max-time 10 \
+      --max-filesize 262144 \
+      -A 'AntiGoblin/1.0' \
+      -o "$TMP_FETCH" \
+      "$URL" 2>"$TMP_FETCH_ERR"
+    RC=$?
+  else
+    /opt/bin/wget -q \
+      --timeout=10 \
+      --tries=1 \
+      -O "$TMP_FETCH" \
+      "$URL" 2>"$TMP_FETCH_ERR"
+    RC=$?
+  fi
+
+  if [ "$RC" -ne 0 ] || [ ! -s "$TMP_FETCH" ]; then
+    ERR="$(tr -d '\r' < "$TMP_FETCH_ERR" 2>/dev/null | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c1-200)"
+    json_err "fetch failed (rc=$RC, fetcher=$FETCHER): $ERR"
+    rm -f "$TMP_BODY" "$TMP_FETCH" "$TMP_FETCH_ERR"
+    exit 0
+  fi
+
+  SIZE="$(wc -c < "$TMP_FETCH" 2>/dev/null || echo 0)"
+  ENCODED="$(/opt/bin/base64 -w 0 < "$TMP_FETCH" 2>/dev/null || /opt/bin/base64 < "$TMP_FETCH" | tr -d '\n\r ')"
+
+  if [ -z "$ENCODED" ]; then
+    json_err "base64 encoding produced empty output (size=$SIZE)"
+    rm -f "$TMP_BODY" "$TMP_FETCH" "$TMP_FETCH_ERR"
+    exit 0
+  fi
+
+  json_ok "{\"ok\":true,\"size\":${SIZE},\"fetcher\":\"${FETCHER}\",\"raw\":\"${ENCODED}\"}"
+  rm -f "$TMP_BODY" "$TMP_FETCH" "$TMP_FETCH_ERR"
+  exit 0
+}
+
 router_auth_login() {
   REQUEST_HOST="$(printf '%s' "${HTTP_HOST:-192.168.1.1}" | sed 's/:.*$//')"
   REQUEST_UA="${HTTP_USER_AGENT:-xkeen-manager}"
@@ -766,6 +860,37 @@ case "$REQUEST_METHOD" in
       else
         json_err "failed to restore xkeen/xray runtime"
       fi
+      rm -f "$TMP_BODY"
+      exit 0
+    fi
+
+    if [ "$KIND" = "subscription-fetch" ]; then
+      fetch_subscription
+    fi
+
+    if [ "$KIND" = "singbox" ]; then
+      if ! grep -q '"outbounds"' "$TMP_BODY" || ! grep -q '"inbounds"' "$TMP_BODY"; then
+        cp "$TMP_BODY" /tmp/xkeen-singbox-invalid.json 2>/dev/null || true
+        json_err "invalid singbox payload (size=${BODY_SIZE:-0})"
+        rm -f "$TMP_BODY"
+        exit 0
+      fi
+
+      SINGBOX_PATH="/opt/etc/sing-box/xkeen.json"
+      SB_BAK="${SINGBOX_PATH}.bak-ui-$(date +%Y%m%d-%H%M%S)"
+      cp "$SINGBOX_PATH" "$SB_BAK" 2>/dev/null || true
+      cp "$TMP_BODY" "$SINGBOX_PATH" || {
+        json_err "failed to write sing-box config"
+        rm -f "$TMP_BODY"
+        exit 0
+      }
+
+      # sing-box validates its own config at start; failure leaves the
+      # service down and the next selfheal cycle will notice. We accept the
+      # write either way — UI is the source of truth on this path.
+      /opt/etc/init.d/S24antigoblin-singbox restart >/dev/null 2>&1 || true
+
+      json_ok "{\"ok\":true,\"singbox\":\"$SINGBOX_PATH\"}"
       rm -f "$TMP_BODY"
       exit 0
     fi
