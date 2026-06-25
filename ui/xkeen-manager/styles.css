@@ -1073,6 +1073,20 @@ code { color: var(--accent-2); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
+}
+
+/* When the user clicks 👁 the URL becomes visible. Length can be 100+ chars
+   (subscription tokens), so we drop the single-line constraint and let the
+   text wrap inside the card instead of trying to push the layout sideways. */
+.card-url.revealed {
+  white-space: normal;
+  word-break: break-all;
+  text-overflow: clip;
+  color: var(--text, #cde);
+  background: rgba(100, 200, 255, 0.06);
+  padding: 4px 6px;
+  border-radius: 4px;
 }
 
 .card-error {

@@ -743,8 +743,12 @@ function bindTopLevel() {
       const btn = event.target.closest("button[data-act]");
       if (!btn) return;
       const id = btn.dataset.id;
-      if (btn.dataset.act === "refresh-sub") refreshSubscription(id);
-      else if (btn.dataset.act === "delete-sub") deleteSubscription(id);
+      switch (btn.dataset.act) {
+        case "refresh-sub": refreshSubscription(id); break;
+        case "delete-sub":  deleteSubscription(id); break;
+        case "reveal-sub":  toggleRevealSub(id); break;
+        case "copy-sub":    copySubUrl(id); break;
+      }
     });
   }
 
@@ -2086,6 +2090,9 @@ function renderSubscriptionsList(profile) {
     const errorBlock = sub.lastError
       ? `<div class="card-error">⚠ ${escapeHtml(sub.lastError)}</div>`
       : "";
+    const isRevealed = revealedSubs.has(sub.id);
+    const isBusy = refreshingSubs.has(sub.id);
+    const urlDisplay = isRevealed ? sub.url : maskUrl(sub.url);
     li.innerHTML = `
       <div class="card-main">
         <div class="card-title">${escapeHtml(sub.name)}</div>
@@ -2094,15 +2101,57 @@ function renderSubscriptionsList(profile) {
           <span>·</span>
           <span>${formatLastFetched(sub.lastFetched)}</span>
         </div>
-        <div class="card-url">${escapeHtml(maskUrl(sub.url))}</div>
+        <div class="card-url${isRevealed ? " revealed" : ""}" title="${escapeHtml(isRevealed ? sub.url : "Показать URL — кнопка 👁")}">${escapeHtml(urlDisplay)}</div>
         ${errorBlock}
       </div>
       <div class="card-actions">
-        <button type="button" data-act="refresh-sub" data-id="${sub.id}">↻ Обновить</button>
+        <button type="button" data-act="reveal-sub" data-id="${sub.id}" title="${isRevealed ? "Скрыть URL" : "Показать URL"}">${isRevealed ? "🙈" : "👁"}</button>
+        <button type="button" data-act="copy-sub" data-id="${sub.id}" title="Скопировать URL">📋</button>
+        <button type="button" data-act="refresh-sub" data-id="${sub.id}"${isBusy ? " disabled" : ""}>${isBusy ? "⏳…" : "↻ Обновить"}</button>
         <button type="button" data-act="delete-sub" data-id="${sub.id}" class="danger">✕</button>
       </div>
     `;
     els.subscriptionsList.appendChild(li);
+  }
+}
+
+// Tracks subs currently mid-refresh (used to disable the button and swap
+// label to a spinner glyph) and subs whose full URL is temporarily revealed.
+const refreshingSubs = new Set();
+const revealedSubs = new Set();
+const revealedTimers = new Map();
+
+function toggleRevealSub(subId) {
+  if (revealedSubs.has(subId)) {
+    revealedSubs.delete(subId);
+    const t = revealedTimers.get(subId);
+    if (t) { clearTimeout(t); revealedTimers.delete(subId); }
+  } else {
+    revealedSubs.add(subId);
+    // auto-hide after 10s so it doesn't stay open on shared screens
+    const t = setTimeout(() => {
+      revealedSubs.delete(subId);
+      revealedTimers.delete(subId);
+      const profile = getActiveProfile();
+      if (profile) renderSubscriptionsList(profile);
+    }, 10000);
+    revealedTimers.set(subId, t);
+  }
+  const profile = getActiveProfile();
+  if (profile) renderSubscriptionsList(profile);
+}
+
+async function copySubUrl(subId) {
+  const profile = getActiveProfile();
+  if (!profile) return;
+  const sub = (profile.subscriptions || []).find((s) => s.id === subId);
+  if (!sub) return;
+  try {
+    await navigator.clipboard.writeText(sub.url);
+    showToast(`URL «${sub.name}» скопирован`, { kind: "success", ttl: 2000 });
+  } catch (err) {
+    // Fallback for non-secure contexts: present in a prompt() so user can copy
+    window.prompt("Скопируй URL вручную:", sub.url);
   }
 }
 
@@ -2385,21 +2434,37 @@ async function refreshSubscription(subId) {
   if (!profile) return;
   const sub = (profile.subscriptions || []).find((s) => s.id === subId);
   if (!sub) return;
-  setProbeStatus("info", `Обновляю «${sub.name}»…`);
+  if (refreshingSubs.has(subId)) return; // already running
+
+  refreshingSubs.add(subId);
+  renderSubscriptionsList(profile); // show spinner state
+  const toast = showToast(`Обновляю «${sub.name}»…`, { kind: "progress" });
+
+  // Remember if the active proxy was from this sub — if the refresh removes
+  // it we report that in the toast instead of silently falling back.
+  const activeProxyBefore = profile.activeProxyId;
+  const activeFromThisSub = (profile.proxies || []).find(
+    (p) => p.id === activeProxyBefore && p.source === subId
+  );
+  const activeKeyBefore = activeFromThisSub
+    ? activeFromThisSub.config.address + ":" + activeFromThisSub.config.port + "/" + activeFromThisSub.config.uuid
+    : null;
+
   try {
     const result = await fetchSubscriptionViaBackend(sub.url);
     if (result.configs.length === 0) {
       sub.lastError = "пустая подписка";
       persistState();
       renderProxiesPanel(profile);
-      setProbeStatus("error", `«${sub.name}»: подписка пуста`);
+      toast.update(`«${sub.name}»: подписка пуста`, "error");
       return;
     }
-    // Diff: keep old proxies by name match, replace others
+
+    // Diff by (address:port/uuid) — same key across refreshes means same server.
     const oldProxies = (profile.proxies || []).filter((p) => p.source === subId);
     const oldByKey = new Map(oldProxies.map((p) => [p.config.address + ":" + p.config.port + "/" + p.config.uuid, p]));
     const newProxies = [];
-    let added = 0;
+    const addedNames = [];
     let kept = 0;
     for (const cfg of result.configs) {
       const key = cfg.address + ":" + cfg.port + "/" + cfg.uuid;
@@ -2417,28 +2482,46 @@ async function refreshSubscription(subId) {
           source: subId,
           config: cfg
         });
-        added++;
+        addedNames.push(cfg.name);
       }
     }
-    const removed = oldByKey.size;
+    const removedNames = Array.from(oldByKey.values()).map((p) => p.name);
     profile.proxies = [
       ...(profile.proxies || []).filter((p) => p.source !== subId),
       ...newProxies
     ];
-    // If active proxy was removed, fall back to first proxy of this sub (or any first)
+
+    // If the active proxy was removed by this refresh, fall back and tell the
+    // user via the toast so the change isn't invisible.
+    let activeLostMessage = "";
     if (profile.activeProxyId && !profile.proxies.some((p) => p.id === profile.activeProxyId)) {
       profile.activeProxyId = newProxies[0]?.id || profile.proxies[0]?.id || null;
+      const fallbackName = profile.proxies.find((p) => p.id === profile.activeProxyId)?.name;
+      activeLostMessage = activeKeyBefore && fallbackName
+        ? ` · активный сброшен на «${fallbackName}»`
+        : " · активный сброшен";
     }
+
     sub.lastFetched = Date.now();
     sub.lastError = null;
     persistState();
     renderProxiesPanel(profile);
-    setProbeStatus("success", `«${sub.name}»: +${added}, ~${kept}, -${removed}`);
+
+    // Build a compact summary: +N добавлено, ~N без изменений, -N удалено.
+    const parts = [];
+    if (addedNames.length) parts.push(`+${addedNames.length} новых`);
+    if (kept) parts.push(`~${kept} без изменений`);
+    if (removedNames.length) parts.push(`−${removedNames.length} удалён${removedNames.length === 1 ? "" : "о"}`);
+    const summary = parts.length ? parts.join(", ") : "без изменений";
+    toast.update(`«${sub.name}»: ${summary}${activeLostMessage}`, "success");
   } catch (err) {
     sub.lastError = String(err.message || err).slice(0, 200);
     persistState();
     renderProxiesPanel(profile);
-    setProbeStatus("error", `«${sub.name}»: ${sub.lastError}`);
+    toast.update(`«${sub.name}»: ${sub.lastError}`, "error");
+  } finally {
+    refreshingSubs.delete(subId);
+    renderSubscriptionsList(profile);
   }
 }
 
