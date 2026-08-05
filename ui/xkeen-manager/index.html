@@ -135,6 +135,26 @@
               <ul id="subscriptionsList" class="cards-list" aria-live="polite"></ul>
             </section>
 
+            <section class="key-block auto-refresh-block" aria-live="polite">
+              <h4 class="key-block-title">Автообновление подписок</h4>
+              <div class="grid two auto-refresh-controls">
+                <label class="toggle auto-refresh-toggle">
+                  <input id="subAutoRefreshEnabled" type="checkbox">
+                  <span>Включено</span>
+                </label>
+                <label>
+                  <span>Интервал (минуты, минимум 15)</span>
+                  <input id="subAutoRefreshInterval" type="number" min="15" max="1440" step="1">
+                </label>
+              </div>
+              <div class="auto-refresh-meta">
+                <div><strong>Последний запуск:</strong> <span id="subAutoRefreshLastRun">—</span></div>
+                <div><strong>Последний успех:</strong> <span id="subAutoRefreshLastSuccess">—</span></div>
+                <div><strong>Последняя ошибка:</strong> <span id="subAutoRefreshLastError">—</span></div>
+              </div>
+              <ul id="subAutoRefreshLog" class="auto-refresh-log"></ul>
+            </section>
+
             <section class="key-block">
               <h4 class="key-block-title">Ручные ключи</h4>
               <ul id="manualKeysList" class="cards-list" aria-live="polite"></ul>
