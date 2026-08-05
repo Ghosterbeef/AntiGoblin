@@ -13,7 +13,6 @@ ui/xkeen-manager/router-live-routing.json
 
 # local credentials and secrets — never commit
 .env
-.idea
 .env.local
 *.env
 !.env.example

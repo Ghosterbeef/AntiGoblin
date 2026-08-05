@@ -363,11 +363,6 @@ const fallbackState = {
 };
 
 let state = null;
-const SUBSCRIPTION_AUTO_REFRESH_DEFAULT_MIN = 360;
-const SUBSCRIPTION_AUTO_REFRESH_MIN_MINUTES = 15;
-const SUBSCRIPTION_AUTO_REFRESH_LOG_LIMIT = 60;
-let subscriptionAutoRefreshTimer = null;
-let subscriptionAutoRefreshInFlight = false;
 
 const els = {
   authOverlay: document.getElementById("authOverlay"),
@@ -515,7 +510,6 @@ function setupPanelCollapse() {
 async function bootstrap() {
   try {
     state = await loadRemoteState();
-    ensureAutoRefreshState();
     await hydrateProxyConfigFromRemote();
     pushDebug(`loaded live state: profiles=${state.profiles.length}, activeGroups=${getActiveProfile()?.groups?.length ?? 0}`);
     hideAuthOverlay();
@@ -523,11 +517,6 @@ async function bootstrap() {
     renderHealth().catch(() => {});
     renderStackInfo().catch(() => {});
     startExitIpCheck();
-    runSubscriptionAutoRefreshCycle("bootstrap").catch((error) => {
-      appendAutoRefreshLog("error", `bootstrap cycle failed: ${error.message || error}`);
-      persistState();
-      scheduleSubscriptionAutoRefresh();
-    });
   } catch (error) {
     pushDebug(`bootstrap failed: ${error.message}`);
     if (isAuthError(error)) {
@@ -620,12 +609,6 @@ function bindTopLevel() {
   els.activeProfile.addEventListener("change", () => {
     state.activeProfileId = els.activeProfile.value;
     persistAndRender();
-    scheduleSubscriptionAutoRefresh();
-    runSubscriptionAutoRefreshCycle("profile-switch").catch((error) => {
-      appendAutoRefreshLog("error", `profile-switch cycle failed: ${error.message || error}`);
-      persistState();
-      scheduleSubscriptionAutoRefresh();
-    });
   });
 
   els.profileName.addEventListener("input", () => {
@@ -2138,134 +2121,6 @@ const refreshingSubs = new Set();
 const revealedSubs = new Set();
 const revealedTimers = new Map();
 
-function ensureAutoRefreshState() {
-  if (!state || typeof state !== "object") return;
-  const raw = state.subscriptionAutoRefresh || {};
-  const enabled = raw.enabled !== false;
-  const intervalMin = clampInt(
-    raw.intervalMin,
-    SUBSCRIPTION_AUTO_REFRESH_DEFAULT_MIN,
-    SUBSCRIPTION_AUTO_REFRESH_MIN_MINUTES,
-    24 * 60
-  );
-  const log = Array.isArray(raw.log) ? raw.log.slice(-SUBSCRIPTION_AUTO_REFRESH_LOG_LIMIT) : [];
-  state.subscriptionAutoRefresh = {
-    enabled,
-    intervalMin,
-    lastRunAt: Number(raw.lastRunAt) || 0,
-    lastSuccessAt: Number(raw.lastSuccessAt) || 0,
-    lastError: raw.lastError ? String(raw.lastError).slice(0, 300) : "",
-    log
-  };
-}
-
-function appendAutoRefreshLog(level, message, extra = {}) {
-  ensureAutoRefreshState();
-  const cfg = state?.subscriptionAutoRefresh;
-  if (!cfg) return;
-  cfg.log.push({
-    ts: Date.now(),
-    level,
-    message,
-    ...extra
-  });
-  cfg.log = cfg.log.slice(-SUBSCRIPTION_AUTO_REFRESH_LOG_LIMIT);
-  pushDebug(`[sub-auto-refresh][${level}] ${message}`);
-}
-
-function scheduleSubscriptionAutoRefresh() {
-  if (subscriptionAutoRefreshTimer) {
-    clearTimeout(subscriptionAutoRefreshTimer);
-    subscriptionAutoRefreshTimer = null;
-  }
-  ensureAutoRefreshState();
-  const profile = getActiveProfile();
-  if (!profile) return;
-  if (state.subscriptionAutoRefresh.enabled === false) {
-    appendAutoRefreshLog("info", "scheduler disabled by settings", { profileId: profile.id });
-    persistState();
-    return;
-  }
-  const intervalMin = state.subscriptionAutoRefresh.intervalMin;
-  const delayMs = Math.max(intervalMin * 60_000, SUBSCRIPTION_AUTO_REFRESH_MIN_MINUTES * 60_000);
-  appendAutoRefreshLog("info", "scheduler initialized", {
-    profileId: profile.id,
-    intervalMin,
-    subscriptions: (profile.subscriptions || []).length
-  });
-  persistState();
-  subscriptionAutoRefreshTimer = setTimeout(() => {
-    runSubscriptionAutoRefreshCycle("timer").catch((error) => {
-      appendAutoRefreshLog("error", `cycle failed: ${error.message || error}`);
-      persistState();
-      scheduleSubscriptionAutoRefresh();
-    });
-  }, delayMs);
-}
-
-async function runSubscriptionAutoRefreshCycle(reason = "manual") {
-  if (subscriptionAutoRefreshInFlight) {
-    appendAutoRefreshLog("warn", "cycle skipped: already running", { reason });
-    persistState();
-    return;
-  }
-  ensureAutoRefreshState();
-  const profile = getActiveProfile();
-  if (!profile) return;
-  if (state.subscriptionAutoRefresh.enabled === false) {
-    appendAutoRefreshLog("info", "cycle skipped: disabled", { reason, profileId: profile.id });
-    persistState();
-    return;
-  }
-  const subscriptions = profile.subscriptions || [];
-  if (!subscriptions.length) {
-    appendAutoRefreshLog("info", "cycle skipped: no subscriptions", { reason, profileId: profile.id });
-    persistState();
-    scheduleSubscriptionAutoRefresh();
-    return;
-  }
-
-  subscriptionAutoRefreshInFlight = true;
-  state.subscriptionAutoRefresh.lastRunAt = Date.now();
-  appendAutoRefreshLog("info", "cycle started", { reason, profileId: profile.id, count: subscriptions.length });
-  persistState();
-
-  let okCount = 0;
-  let failedCount = 0;
-  try {
-    for (const sub of subscriptions) {
-      const result = await refreshSubscription(sub.id, { silentToast: true, source: "auto" });
-      if (result?.ok) {
-        okCount++;
-        appendAutoRefreshLog("info", `subscription updated: ${sub.name}`, {
-          subId: sub.id,
-          summary: result.summary || "ok"
-        });
-      } else {
-        failedCount++;
-        appendAutoRefreshLog("error", `subscription failed: ${sub.name}`, {
-          subId: sub.id,
-          error: result?.error || "unknown error"
-        });
-      }
-      persistState();
-    }
-
-    if (failedCount === 0) {
-      state.subscriptionAutoRefresh.lastSuccessAt = Date.now();
-      state.subscriptionAutoRefresh.lastError = "";
-      appendAutoRefreshLog("info", `cycle completed: success=${okCount}, failed=${failedCount}`, { reason });
-    } else {
-      state.subscriptionAutoRefresh.lastError = `Ошибок: ${failedCount}`;
-      appendAutoRefreshLog("warn", `cycle completed with errors: success=${okCount}, failed=${failedCount}`, { reason });
-    }
-  } finally {
-    subscriptionAutoRefreshInFlight = false;
-    persistState();
-    scheduleSubscriptionAutoRefresh();
-  }
-}
-
 function toggleRevealSub(subId) {
   if (revealedSubs.has(subId)) {
     revealedSubs.delete(subId);
@@ -2574,18 +2429,16 @@ async function saveSubscription() {
   }
 }
 
-async function refreshSubscription(subId, options = {}) {
+async function refreshSubscription(subId) {
   const profile = getActiveProfile();
-  if (!profile) return { ok: false, error: "profile not found" };
+  if (!profile) return;
   const sub = (profile.subscriptions || []).find((s) => s.id === subId);
-  if (!sub) return { ok: false, error: "subscription not found" };
-  if (refreshingSubs.has(subId)) return { ok: false, error: "already running" };
-
-  const silentToast = options.silentToast === true;
+  if (!sub) return;
+  if (refreshingSubs.has(subId)) return; // already running
 
   refreshingSubs.add(subId);
   renderSubscriptionsList(profile); // show spinner state
-  const toast = silentToast ? null : showToast(`Обновляю «${sub.name}»…`, { kind: "progress" });
+  const toast = showToast(`Обновляю «${sub.name}»…`, { kind: "progress" });
 
   // Remember if the active proxy was from this sub — if the refresh removes
   // it we report that in the toast instead of silently falling back.
@@ -2603,8 +2456,8 @@ async function refreshSubscription(subId, options = {}) {
       sub.lastError = "пустая подписка";
       persistState();
       renderProxiesPanel(profile);
-      if (toast) toast.update(`«${sub.name}»: подписка пуста`, "error");
-      return { ok: false, error: sub.lastError };
+      toast.update(`«${sub.name}»: подписка пуста`, "error");
+      return;
     }
 
     // Diff by (address:port/uuid) — same key across refreshes means same server.
@@ -2660,14 +2513,12 @@ async function refreshSubscription(subId, options = {}) {
     if (kept) parts.push(`~${kept} без изменений`);
     if (removedNames.length) parts.push(`−${removedNames.length} удалён${removedNames.length === 1 ? "" : "о"}`);
     const summary = parts.length ? parts.join(", ") : "без изменений";
-    if (toast) toast.update(`«${sub.name}»: ${summary}${activeLostMessage}`, "success");
-    return { ok: true, summary, added: addedNames.length, kept, removed: removedNames.length };
+    toast.update(`«${sub.name}»: ${summary}${activeLostMessage}`, "success");
   } catch (err) {
     sub.lastError = String(err.message || err).slice(0, 200);
     persistState();
     renderProxiesPanel(profile);
-    if (toast) toast.update(`«${sub.name}»: ${sub.lastError}`, "error");
-    return { ok: false, error: sub.lastError };
+    toast.update(`«${sub.name}»: ${sub.lastError}`, "error");
   } finally {
     refreshingSubs.delete(subId);
     renderSubscriptionsList(profile);
@@ -3308,35 +3159,12 @@ function normalizeState(input) {
 
     return {
       activeProfileId,
-      profiles: safeProfiles,
-      subscriptionAutoRefresh: {
-        enabled: input?.subscriptionAutoRefresh?.enabled !== false,
-        intervalMin: clampInt(
-          input?.subscriptionAutoRefresh?.intervalMin,
-          SUBSCRIPTION_AUTO_REFRESH_DEFAULT_MIN,
-          SUBSCRIPTION_AUTO_REFRESH_MIN_MINUTES,
-          24 * 60
-        ),
-        lastRunAt: Number(input?.subscriptionAutoRefresh?.lastRunAt) || 0,
-        lastSuccessAt: Number(input?.subscriptionAutoRefresh?.lastSuccessAt) || 0,
-        lastError: input?.subscriptionAutoRefresh?.lastError ? String(input.subscriptionAutoRefresh.lastError).slice(0, 300) : "",
-        log: Array.isArray(input?.subscriptionAutoRefresh?.log)
-          ? input.subscriptionAutoRefresh.log.slice(-SUBSCRIPTION_AUTO_REFRESH_LOG_LIMIT)
-          : []
-      }
+      profiles: safeProfiles
     };
   }
 
   return {
     activeProfileId: "profile-main",
-    subscriptionAutoRefresh: {
-      enabled: true,
-      intervalMin: SUBSCRIPTION_AUTO_REFRESH_DEFAULT_MIN,
-      lastRunAt: 0,
-      lastSuccessAt: 0,
-      lastError: "",
-      log: []
-    },
     profiles: [
       normalizeProfile({
         id: "profile-main",
@@ -3534,6 +3362,13 @@ function downloadJson(fileName, data) {
   link.download = fileName;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function escapeHtml(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 // True if string looks like a valid domain (one or more labels, dots,
