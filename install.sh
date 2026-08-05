@@ -4,11 +4,11 @@
 # Usage on the router (after Entware/OPKG is enabled in Keenetic and
 # the USB stick is mounted at /opt):
 #
-#   wget -O - https://raw.githubusercontent.com/MaksimSamarin/AntiGoblin/main/install.sh | sh
+#   wget -O - https://raw.githubusercontent.com/Ghosterbeef/AntiGoblin/main/install.sh | sh
 #
 # Or:
 #
-#   wget -O install.sh https://raw.githubusercontent.com/MaksimSamarin/AntiGoblin/main/install.sh
+#   wget -O install.sh https://raw.githubusercontent.com/Ghosterbeef/AntiGoblin/main/install.sh
 #   sh install.sh
 #
 # The script is idempotent: re-running it upgrades sources without
@@ -16,7 +16,7 @@
 
 set -eu
 
-REPO_OWNER="${ANTIGOBLIN_REPO_OWNER:-MaksimSamarin}"
+REPO_OWNER="${ANTIGOBLIN_REPO_OWNER:-Ghosterbeef}"
 REPO_NAME="${ANTIGOBLIN_REPO_NAME:-AntiGoblin}"
 REPO_BRANCH="${ANTIGOBLIN_REPO_BRANCH:-main}"
 REPO_TARBALL="https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/heads/${REPO_BRANCH}.tar.gz"
