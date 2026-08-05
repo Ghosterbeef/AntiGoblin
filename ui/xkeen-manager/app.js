@@ -421,12 +421,6 @@ const els = {
   addManualKeyBtn: document.getElementById("addManualKeyBtn"),
   addSubscriptionBtn: document.getElementById("addSubscriptionBtn"),
   subscriptionsList: document.getElementById("subscriptionsList"),
-  subAutoRefreshEnabled: document.getElementById("subAutoRefreshEnabled"),
-  subAutoRefreshInterval: document.getElementById("subAutoRefreshInterval"),
-  subAutoRefreshLastRun: document.getElementById("subAutoRefreshLastRun"),
-  subAutoRefreshLastSuccess: document.getElementById("subAutoRefreshLastSuccess"),
-  subAutoRefreshLastError: document.getElementById("subAutoRefreshLastError"),
-  subAutoRefreshLog: document.getElementById("subAutoRefreshLog"),
   manualKeysList: document.getElementById("manualKeysList"),
   activeProxyList: document.getElementById("activeProxyList"),
   manualKeyForm: document.getElementById("manualKeyForm"),
@@ -759,37 +753,6 @@ function bindTopLevel() {
   }
   if (els.saveSubscriptionBtn) {
     els.saveSubscriptionBtn.addEventListener("click", () => saveSubscription());
-  }
-
-  if (els.subAutoRefreshEnabled) {
-    els.subAutoRefreshEnabled.addEventListener("change", () => {
-      ensureAutoRefreshState();
-      state.subscriptionAutoRefresh.enabled = !!els.subAutoRefreshEnabled.checked;
-      appendAutoRefreshLog("info", `auto-refresh ${state.subscriptionAutoRefresh.enabled ? "enabled" : "disabled"} from UI`);
-      persistState();
-      scheduleSubscriptionAutoRefresh();
-      renderAutoRefreshPanel();
-    });
-  }
-
-  if (els.subAutoRefreshInterval) {
-    const applyInterval = () => {
-      ensureAutoRefreshState();
-      const intervalMin = clampInt(
-        Number(els.subAutoRefreshInterval.value),
-        state.subscriptionAutoRefresh.intervalMin,
-        SUBSCRIPTION_AUTO_REFRESH_MIN_MINUTES,
-        24 * 60
-      );
-      state.subscriptionAutoRefresh.intervalMin = intervalMin;
-      els.subAutoRefreshInterval.value = String(intervalMin);
-      appendAutoRefreshLog("info", `interval updated from UI: ${intervalMin} min`);
-      persistState();
-      scheduleSubscriptionAutoRefresh();
-      renderAutoRefreshPanel();
-    };
-    els.subAutoRefreshInterval.addEventListener("change", applyInterval);
-    els.subAutoRefreshInterval.addEventListener("blur", applyInterval);
   }
 
   if (els.subscriptionsList) {
@@ -2117,61 +2080,8 @@ function isProxyActivatable(_config) {
 function renderProxiesPanel(profile) {
   if (!profile) return;
   renderSubscriptionsList(profile);
-  renderAutoRefreshPanel();
   renderManualKeysList(profile);
   renderActiveProxyList(profile);
-}
-
-function formatAutoRefreshTs(ts) {
-  if (!ts) return "—";
-  try {
-    return new Date(ts).toLocaleString("ru-RU");
-  } catch {
-    return "—";
-  }
-}
-
-function renderAutoRefreshPanel() {
-  if (!els.subAutoRefreshEnabled || !els.subAutoRefreshInterval || !els.subAutoRefreshLog) return;
-  ensureAutoRefreshState();
-  const cfg = state?.subscriptionAutoRefresh;
-  if (!cfg) return;
-
-  els.subAutoRefreshEnabled.checked = cfg.enabled !== false;
-  els.subAutoRefreshInterval.value = String(clampInt(
-    cfg.intervalMin,
-    SUBSCRIPTION_AUTO_REFRESH_DEFAULT_MIN,
-    SUBSCRIPTION_AUTO_REFRESH_MIN_MINUTES,
-    24 * 60
-  ));
-
-  if (els.subAutoRefreshLastRun) {
-    els.subAutoRefreshLastRun.textContent = formatAutoRefreshTs(cfg.lastRunAt);
-  }
-  if (els.subAutoRefreshLastSuccess) {
-    els.subAutoRefreshLastSuccess.textContent = formatAutoRefreshTs(cfg.lastSuccessAt);
-  }
-  if (els.subAutoRefreshLastError) {
-    els.subAutoRefreshLastError.textContent = cfg.lastError || "—";
-  }
-
-  els.subAutoRefreshLog.innerHTML = "";
-  const items = (cfg.log || []).slice(-15).reverse();
-  if (!items.length) {
-    const li = document.createElement("li");
-    li.className = "card-empty";
-    li.textContent = "Лог пока пуст.";
-    els.subAutoRefreshLog.appendChild(li);
-    return;
-  }
-  for (const entry of items) {
-    const li = document.createElement("li");
-    li.className = `auto-refresh-log-item level-${escapeHtml(entry.level || "info")}`;
-    const ts = formatAutoRefreshTs(entry.ts);
-    const msg = String(entry.message || "");
-    li.innerHTML = `<span class="auto-refresh-log-ts">${escapeHtml(ts)}</span><span class="auto-refresh-log-msg">${escapeHtml(msg)}</span>`;
-    els.subAutoRefreshLog.appendChild(li);
-  }
 }
 
 function renderSubscriptionsList(profile) {

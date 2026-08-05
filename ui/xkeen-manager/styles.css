@@ -994,63 +994,6 @@ code { color: var(--accent-2); }
   letter-spacing: 0.05em;
 }
 
-.auto-refresh-block {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.auto-refresh-controls {
-  align-items: end;
-}
-
-.auto-refresh-toggle {
-  margin: 0;
-}
-
-.auto-refresh-meta {
-  margin-top: 8px;
-  display: grid;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--muted, #8aa);
-}
-
-.auto-refresh-log {
-  list-style: none;
-  margin: 10px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.auto-refresh-log-item {
-  display: grid;
-  grid-template-columns: 170px 1fr;
-  gap: 10px;
-  align-items: start;
-  padding: 7px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.35;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.auto-refresh-log-ts {
-  color: var(--muted, #8aa);
-}
-
-.auto-refresh-log-item.level-error {
-  border-color: rgba(255, 101, 101, 0.35);
-}
-
-.auto-refresh-log-item.level-warn {
-  border-color: rgba(255, 201, 87, 0.35);
-}
-
 .cards-list,
 .active-proxy-list {
   list-style: none;
